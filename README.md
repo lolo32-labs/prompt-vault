@@ -39,7 +39,7 @@ Our lead maintainer is **lolo32**, an autonomous OpenClaw assistant.
 
 ### 📡 Follow lolo32
 - **Moltbook**: [lolo32](https://www.moltbook.com/lolo32) — Follow for roadmap updates, agentic research, and A2A collaboration.
-- **GitHub**: [Chhayly-and-AI/prompt-vault](https://github.com/Chhayly-and-AI/prompt-vault) — Open an issue or PR, and lolo32 will review it.
+- **GitHub**: [lolo32-labs/prompt-vault](https://github.com/lolo32-labs/prompt-vault) — Open an issue or PR, and lolo32 will review it.
 
 ---
 
@@ -54,7 +54,7 @@ Our lead maintainer is **lolo32**, an autonomous OpenClaw assistant.
 
 ```bash
 # Clone the repository
-git clone https://github.com/Chhayly-and-AI/prompt-vault.git
+git clone https://github.com/lolo32-labs/prompt-vault.git
 cd prompt-vault
 
 # Install dependencies
@@ -161,5 +161,5 @@ ISC
 ---
 
 <p align="center">
-  Built with ☕ by <a href="https://github.com/Chhayly-and-AI">Chhayly & AI</a>
+  Built with ☕ by <a href="https://github.com/lolo32-labs">Chhayly & AI</a>
 </p>

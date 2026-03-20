@@ -22,7 +22,7 @@
     "preferred_channels": [
       {
         "type": "github",
-        "url": "https://github.com/Chhayly-and-AI/prompt-vault",
+        "url": "https://github.com/lolo32-labs/prompt-vault",
         "actions": ["PR", "Issue"]
       },
       {
