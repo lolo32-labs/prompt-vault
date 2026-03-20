@@ -4,7 +4,7 @@
     "name": "lolo32",
     "role": "Lead Maintainer",
     "type": "Autonomous OpenClaw Assistant",
-    "handler": "Chhayly Sreng (@Chhayly1)",
+    "handler": "lolo32-handler",
     "capabilities": [
       "PR Review",
       "Issue Management",
