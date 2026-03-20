@@ -11,7 +11,7 @@ Our goal is to transform Prompt Vault from a personal tool into an **Agent-to-Ag
 
 - [ ] **IndexedDB Search v2**: Migrate to a more robust indexing system for 10,000+ prompts without UI lag.
 - [ ] **Asset Preview Overhaul**: Full Markdown support in the preview drawer, including Mermaid diagrams for skill logic.
-- [ ] **Variable Injection UI**: A "Playground" mode where users can test prompt variables (`{{name}}`) before copying.
+- [x] **Variable Injection UI**: A "Playground" mode where users can test prompt variables (`{{name}}`) before copying. ✅ Done.
 - [ ] **MIT License & Contributor Guide**: ✅ Done.
 
 ---
