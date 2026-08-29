@@ -1,27 +1,38 @@
 {
   "name": "prompt-vault-v2",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Engineering-grade local-first prompt & skill manager for LLM workflows",
+  "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
-  "keywords": [],
+  "keywords": [
+    "prompts",
+    "skills",
+    "llm",
+    "agents",
+    "indexeddb"
+  ],
   "author": "",
-  "license": "ISC",
+  "license": "MIT",
   "dependencies": {
-    "@types/react-syntax-highlighter": "^15.5.13",
     "clsx": "^2.1.1",
     "framer-motion": "^12.34.3",
     "idb-keyval": "^6.2.2",
     "lucide-react": "^0.575.0",
-    "next": "^16.1.6",
+    "mermaid": "^11.17.0",
+    "next": "^16.3.3",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
+    "react-markdown": "^10.1.0",
     "react-syntax-highlighter": "^16.1.1",
+    "remark-gfm": "^4.0.1",
     "tailwind-merge": "^3.5.0"
   },
   "devDependencies": {
@@ -29,11 +40,13 @@
     "@types/node": "^25.3.2",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
+    "@types/react-syntax-highlighter": "^15.5.13",
     "autoprefixer": "^10.4.27",
     "eslint": "^9.39.3",
-    "eslint-config-next": "^16.1.6",
+    "eslint-config-next": "^16.3.3",
     "postcss": "^8.5.6",
     "tailwindcss": "^4.2.1",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.11"
   }
 }
