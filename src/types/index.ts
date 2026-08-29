@@ -5,7 +5,7 @@ export interface PromptItem {
   type: 'prompt' | 'skill';
   sourceUrl?: string;
   tags?: string[];
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
   createdAt: number;
 }
 
@@ -15,5 +15,6 @@ export interface ScannedItem {
   path: string;
   type: 'prompt' | 'skill';
   content: string;
+  sourceUrl?: string;
   dependencies?: string[];
 }

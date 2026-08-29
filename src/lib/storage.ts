@@ -5,6 +5,10 @@ export async function savePrompt(prompt: PromptItem): Promise<void> {
   await set(prompt.id, prompt);
 }
 
+export async function savePrompts(prompts: PromptItem[]): Promise<void> {
+  await Promise.all(prompts.map((p) => set(p.id, p)));
+}
+
 export async function updatePrompt(prompt: PromptItem): Promise<void> {
   await set(prompt.id, prompt);
 }
