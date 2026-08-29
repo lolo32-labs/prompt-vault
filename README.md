@@ -17,16 +17,18 @@ Prompt Vault lets you collect, organize, and manage LLM prompts and agentic skil
 
 | Feature | Description |
 |---------|-------------|
-| 🔍 **GitHub Import** | Scan any public repository for `SKILL.md` and `.prompt` files |
+| 🔍 **GitHub Import** | Scan any public repository for `SKILL.md` and `.prompt` files — with rate-limit handling, fetch timeouts, and an optional access token |
 | 📝 **Manual Creation** | Create prompts and skills directly with the built-in editor |
-| 🏷️ **Smart Parsing** | Extracts skill names & descriptions from YAML frontmatter |
-| ⌨️ **⌘K Search** | Global keyboard shortcut to instantly search your library |
-| ✏️ **Inline Editing** | Rename prompts directly from the card view |
-| 📋 **One-Click Copy** | Copy prompt content to clipboard instantly |
-| 🗂️ **Collection Filters** | Filter by All, Skills, or Prompts |
+| 🏷️ **Tags** | Tag entries and filter with a single click on any tag chip |
+| 📖 **Markdown + Mermaid Preview** | Skills render as rich documents, including live diagrams |
+| ⚙️ **Variable Playground** | Test `{{variables}}` in the live preview before copying |
+| ✏️ **Full Editor** | Edit names, types, tags, and content inline; delete is undoable |
+| 📦 **JSON Bundles** | Export/import your entire vault as a portable file (duplicates detected) |
+| ⌨️ **⌘K Search** | Instant debounced search over names, content, and tags |
+| 🗂️ **Collection Filters & Sorting** | Filter by All/Skills/Prompts, sort by date or name |
 | 💾 **Local Storage** | All data stored in IndexedDB — no server, no account needed |
+| ♿ **Accessible Modals** | Focus trap, Escape-to-close, reduced-motion aware |
 | 🌙 **Dark Theme** | Premium dark UI with glassmorphism and smooth animations |
-| 📱 **Responsive** | Collapsible sidebar with mobile support |
 | 🦞 **Agent-Maintained** | This project is primarily maintained by **lolo32**, an autonomous OpenClaw assistant |
 
 ---
@@ -107,7 +109,9 @@ src/
 | **Animations** | [Framer Motion](https://www.framer.com/motion/) |
 | **Icons** | [Lucide React](https://lucide.dev/) |
 | **Storage** | [idb-keyval](https://github.com/nicedoc/idb-keyval) (IndexedDB) |
+| **Markdown/Mermaid** | [react-markdown](https://github.com/remarkjs/react-markdown) + remark-gfm + mermaid |
 | **Syntax Highlighting** | [react-syntax-highlighter](https://github.com/react-syntax-highlighter/react-syntax-highlighter) |
+| **Testing** | [Vitest](https://vitest.dev/) |
 | **Language** | TypeScript 5 |
 
 ---
@@ -156,7 +160,7 @@ The UI uses a custom design system built on Tailwind CSS v4's `@theme` directive
 
 ## 📄 License
 
-ISC
+MIT
 
 ---
 

@@ -19,23 +19,33 @@ Prompt Vault is an **agent-friendly** repository. If you are an autonomous build
 
 ### Prerequisites
 - Node.js (v18+)
-- pnpm (preferred)
+- npm
 
 ### Development Setup
 1. Fork the repository.
 2. Clone your fork: `git clone https://github.com/YOUR_USERNAME/prompt-vault.git`
-3. Install dependencies: `pnpm install`
-4. Start the dev server: `pnpm dev`
+3. Install dependencies: `npm install`
+4. Start the dev server: `npm run dev`
 5. Open [http://localhost:3000](http://localhost:3000) to see the result.
+
+### Checks & Tests
+```bash
+npm run lint        # ESLint
+npm run typecheck   # TypeScript
+npm run test        # Vitest unit tests
+npm run build       # Production build
+```
 
 ---
 
 ## ⚡ Our Tech Stack
-- **Framework**: Next.js 15+ (App Router)
+- **Framework**: Next.js 16 (App Router, Turbopack)
 - **Styling**: Tailwind CSS 4
-- **State/Storage**: Zustand + IndexedDB (idb-keyval)
+- **State/Storage**: React hooks + IndexedDB (idb-keyval)
+- **Markdown/Mermaid**: react-markdown + remark-gfm + mermaid
 - **Icons**: Lucide React
-- **Validation**: Zod
+- **Animation**: Framer Motion
+- **Testing**: Vitest
 
 ---
 
