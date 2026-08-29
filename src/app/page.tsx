@@ -1,11 +1,19 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import GitHubScanner from "@/components/GitHubScanner";
 import ImportSelector from "@/components/ImportSelector";
 import LibraryView from "@/components/LibraryView";
 import { ScannedItem, PromptItem } from "@/types";
-import { getAllPrompts, savePrompt, deletePrompt, updatePrompt } from "@/lib/storage";
+import {
+  getAllPrompts,
+  savePrompt,
+  savePrompts,
+  updatePrompt,
+  deletePrompt,
+} from "@/lib/storage";
+import { generateId, parseTags, duplicateKey, formatFileDate } from "@/lib/utils";
+import { useDebouncedValue, useFocusTrap } from "@/lib/hooks";
 import {
   LayoutGrid,
   Plus,
@@ -21,8 +29,24 @@ import {
   FileText,
   Zap,
   ArrowRight,
+  Download,
+  Upload,
+  Tag,
+  CheckCircle2,
+  AlertCircle,
+  ArrowUpDown,
 } from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion, AnimatePresence, MotionConfig } from "framer-motion";
+
+type SortKey = "newest" | "oldest" | "name";
+
+interface Notice {
+  message: string;
+  type: "success" | "error";
+  action?: { label: string; run: () => void | Promise<void> };
+}
+
+const SORT_STORAGE_KEY = "prompt-vault:sort";
 
 export default function Home() {
   const [prompts, setPrompts] = useState<PromptItem[]>([]);
@@ -32,18 +56,82 @@ export default function Home() {
   const [searchQuery, setSearchQuery] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [notice, setNotice] = useState<Notice | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [sortBy, setSortBy] = useState<SortKey>("newest");
+  const [shortcutHint, setShortcutHint] = useState("⌘K");
   const searchRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    loadPrompts();
+  const showNotice = useCallback(
+    (
+      message: string,
+      options?: { type?: Notice["type"]; action?: Notice["action"] }
+    ) => {
+      setNotice({
+        message,
+        type: options?.type ?? "success",
+        action: options?.action,
+      });
+    },
+    []
+  );
+
+  const loadPrompts = useCallback(async () => {
+    const data = await getAllPrompts();
+    setPrompts([...data].sort((a, b) => b.createdAt - a.createdAt));
   }, []);
 
-  // Ctrl+K shortcut
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await getAllPrompts();
+        if (!cancelled) setPrompts([...data].sort((a, b) => b.createdAt - a.createdAt));
+      } catch (err) {
+        if (!cancelled) {
+          setLoadError(
+            err instanceof Error ? err.message : "Failed to load your vault."
+          );
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [reloadKey]);
+
+  // Collapse the sidebar on narrow screens after mount (avoids hydration mismatch).
+  useEffect(() => {
+    if (!window.matchMedia("(min-width: 1024px)").matches) {
+      setSidebarOpen(false);
+    }
+    const mac = /mac|iphone|ipad/i.test(navigator.platform || navigator.userAgent);
+    if (!mac) setShortcutHint("Ctrl K");
+    try {
+      const stored = localStorage.getItem(SORT_STORAGE_KEY);
+      if (stored === "newest" || stored === "oldest" || stored === "name") {
+        setSortBy(stored);
+      }
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SORT_STORAGE_KEY, sortBy);
+    } catch {}
+  }, [sortBy]);
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
-        searchRef.current?.focus();
+        setView("library");
+        setTimeout(() => searchRef.current?.focus(), 0);
       }
       if (e.key === "Escape") {
         setShowCreateModal(false);
@@ -53,59 +141,242 @@ export default function Home() {
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
-  const loadPrompts = async () => {
-    const data = await getAllPrompts();
-    setPrompts(data.sort((a, b) => b.createdAt - a.createdAt));
-  };
+  useEffect(() => {
+    if (!notice) return;
+    const timer = setTimeout(() => setNotice(null), notice.action ? 6000 : 4000);
+    return () => clearTimeout(timer);
+  }, [notice]);
 
   const handleItemsScanned = (items: ScannedItem[]) => {
     setScannedItems(items);
   };
 
-  const handleImport = async (selected: ScannedItem[]) => {
-    for (const item of selected) {
-      await savePrompt({
-        id: crypto.randomUUID(),
-        name: item.name,
-        content: item.content,
-        type: item.type,
-        createdAt: Date.now(),
-        sourceUrl: item.path,
-      });
-    }
+  const handleScanCancel = () => {
     setScannedItems(null);
-    setView("library");
-    loadPrompts();
   };
 
-  const handleCreatePrompt = async (name: string, content: string, type: "prompt" | "skill") => {
-    await savePrompt({
-      id: crypto.randomUUID(),
-      name,
-      content,
-      type,
-      createdAt: Date.now(),
-    });
+  const handleImport = async (selected: ScannedItem[]) => {
+    try {
+      const existing = await getAllPrompts();
+      const existingKeys = new Set(existing.map((p) => duplicateKey(p.type, p.name)));
+
+      const fresh = selected.filter(
+        (item) => !existingKeys.has(duplicateKey(item.type, item.name))
+      );
+      const skipped = selected.length - fresh.length;
+
+      await savePrompts(
+        fresh.map((item) => ({
+          id: generateId(),
+          name: item.name,
+          content: item.content,
+          type: item.type,
+          createdAt: Date.now(),
+          sourceUrl: item.sourceUrl && /^https?:\/\//i.test(item.sourceUrl) ? item.sourceUrl : undefined,
+          description: item.description,
+        }))
+      );
+
+      setScannedItems(null);
+      setView("library");
+      await loadPrompts();
+      showNotice(
+        skipped > 0
+          ? `Imported ${fresh.length} item${fresh.length === 1 ? "" : "s"} (${skipped} duplicate${skipped === 1 ? "" : "s"} skipped).`
+          : `Imported ${fresh.length} item${fresh.length === 1 ? "" : "s"}.`
+      );
+    } catch (err) {
+      console.error(err);
+      showNotice(
+        err instanceof Error
+          ? err.message
+          : "Failed to save imported items. Your vault may be out of space.",
+        { type: "error" }
+      );
+    }
+  };
+
+  const handleCreatePrompt = async (
+    name: string,
+    content: string,
+    type: "prompt" | "skill",
+    tags: string[]
+  ): Promise<boolean> => {
+    try {
+      await savePrompt({
+        id: generateId(),
+        name,
+        content,
+        type,
+        tags: tags.length ? tags : undefined,
+        createdAt: Date.now(),
+      });
+    } catch (err) {
+      console.error(err);
+      showNotice("Failed to save. Your vault may be out of space.", { type: "error" });
+      return false;
+    }
     setShowCreateModal(false);
-    loadPrompts();
+    await loadPrompts();
+    showNotice("Prompt created.");
+    return true;
   };
 
-  const handleEditPrompt = async (prompt: PromptItem) => {
-    await updatePrompt(prompt);
-    loadPrompts();
+  const handleEditPrompt = async (prompt: PromptItem): Promise<boolean> => {
+    try {
+      await updatePrompt(prompt);
+    } catch (err) {
+      console.error(err);
+      showNotice("Failed to save changes. Your vault may be out of space.", { type: "error" });
+      return false;
+    }
+    await loadPrompts();
+    return true;
   };
 
-  const filteredPrompts = prompts.filter((p) => {
-    const query = searchQuery.toLowerCase();
-    const matchesSearch =
-      (p.name ?? "").toLowerCase().includes(query) ||
-      (p.content ?? "").toLowerCase().includes(query);
-    const matchesCategory = activeCategory === "all" || p.type === activeCategory;
-    return matchesSearch && matchesCategory;
-  });
+  const handleDeleteWithUndo = useCallback(
+    async (item: PromptItem): Promise<boolean> => {
+      try {
+        await deletePrompt(item.id);
+      } catch (err) {
+        console.error(err);
+        showNotice("Failed to delete this item.", { type: "error" });
+        return false;
+      }
+      await loadPrompts();
+      showNotice(`Deleted “${item.name}”`, {
+        action: {
+          label: "Undo",
+          run: async () => {
+            try {
+              await savePrompt(item);
+              await loadPrompts();
+              showNotice(`Restored “${item.name}”.`);
+            } catch (err) {
+              console.error(err);
+              showNotice("Failed to restore this item.", { type: "error" });
+            }
+          },
+        },
+      });
+      return true;
+    },
+    [loadPrompts, showNotice]
+  );
+
+  const handleExport = () => {
+    try {
+      const bundle = {
+        version: "1.1.0",
+        exportedAt: new Date().toISOString(),
+        items: prompts,
+      };
+      const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `prompt-vault-${formatFileDate(new Date())}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showNotice(`Exported ${prompts.length} item${prompts.length === 1 ? "" : "s"}.`);
+    } catch (err) {
+      console.error(err);
+      showNotice("Export failed.", { type: "error" });
+    }
+  };
+
+  const handleImportJson = async (file: File) => {
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text) as { items?: PromptItem[] } | PromptItem[];
+      const rawItems = Array.isArray(parsed) ? parsed : parsed.items;
+
+      if (!Array.isArray(rawItems)) {
+        throw new Error("Invalid bundle: expected an array of items.");
+      }
+
+      const valid = rawItems.filter(
+        (i): i is PromptItem =>
+          !!i &&
+          typeof i.id === "string" &&
+          typeof i.name === "string" &&
+          typeof i.content === "string"
+      );
+
+      const sanitized = valid.map((i) => ({
+        ...i,
+        tags: Array.isArray(i.tags) ? i.tags.filter((t) => typeof t === "string") : undefined,
+        sourceUrl:
+          typeof i.sourceUrl === "string" && /^https?:\/\//i.test(i.sourceUrl)
+            ? i.sourceUrl
+            : undefined,
+        createdAt: typeof i.createdAt === "number" ? i.createdAt : Date.now(),
+      }));
+
+      const existing = await getAllPrompts();
+      const existingIds = new Set(existing.map((p) => p.id));
+      const added = sanitized.filter((i) => !existingIds.has(i.id)).length;
+      const updated = sanitized.length - added;
+
+      await savePrompts(sanitized);
+      await loadPrompts();
+      showNotice(
+        sanitized.length
+          ? `Bundle imported: ${added} added${updated > 0 ? `, ${updated} updated` : ""}.`
+          : "No valid items found in bundle."
+      );
+    } catch (err) {
+      console.error(err);
+      showNotice(
+        err instanceof Error ? err.message : "Failed to import bundle.",
+        { type: "error" }
+      );
+    }
+  };
+
+  const debouncedQuery = useDebouncedValue(searchQuery, 200);
+
+  const searchIndex = useMemo(() => {
+    return prompts.map((p) => ({
+      id: p.id,
+      haystack: `${p.name} ${p.content} ${(p.tags ?? []).join(" ")}`.toLowerCase(),
+    }));
+  }, [prompts]);
+
+  const filteredPrompts = useMemo(() => {
+    const query = debouncedQuery.trim().toLowerCase();
+    let base =
+      !query
+        ? prompts.filter((p) => activeCategory === "all" || p.type === activeCategory)
+        : (() => {
+            const matchingIds = new Set(
+              searchIndex
+                .filter((entry) => entry.haystack.includes(query))
+                .map((entry) => entry.id)
+            );
+            return prompts.filter(
+              (p) => matchingIds.has(p.id) && (activeCategory === "all" || p.type === activeCategory)
+            );
+          })();
+
+    base = [...base];
+    if (sortBy === "oldest") base.sort((a, b) => a.createdAt - b.createdAt);
+    else if (sortBy === "name") base.sort((a, b) => a.name.localeCompare(b.name));
+    else base.sort((a, b) => b.createdAt - a.createdAt);
+    return base;
+  }, [prompts, searchIndex, debouncedQuery, activeCategory, sortBy]);
 
   const skillCount = prompts.filter((p) => p.type === "skill").length;
   const promptCount = prompts.filter((p) => p.type === "prompt").length;
+  const filtersActive = debouncedQuery.trim() !== "" || activeCategory !== "all";
+  const existingKeys = useMemoExistingKeys(prompts);
+
+  const clearFilters = () => {
+    setSearchQuery("");
+    setActiveCategory("all");
+  };
 
   const navItems = [
     { id: "library" as const, label: "Library", icon: LayoutGrid },
@@ -118,8 +389,15 @@ export default function Home() {
     { id: "prompt", label: "Prompts", icon: Terminal, count: promptCount },
   ];
 
+  const closeSidebarIfNarrow = () => {
+    if (!window.matchMedia("(min-width: 1024px)").matches) {
+      setSidebarOpen(false);
+    }
+  };
+
   return (
     <main className="flex h-screen overflow-hidden font-sans">
+      <MotionConfig reducedMotion="user">
       {/* Mobile overlay */}
       <AnimatePresence>
         {sidebarOpen && (
@@ -167,7 +445,7 @@ export default function Home() {
                     key={item.id}
                     onClick={() => {
                       setView(item.id);
-                      setSidebarOpen(false);
+                      closeSidebarIfNarrow();
                     }}
                     className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 group ${isActive
                       ? "bg-accent-500/10 text-accent-400 border border-accent-500/20"
@@ -216,7 +494,7 @@ export default function Home() {
         </nav>
 
         {/* Sidebar Footer */}
-        <div className="p-4 border-t border-surface-800/50">
+        <div className="p-4 border-t border-surface-800/50 space-y-3">
           <button
             onClick={() => setShowCreateModal(true)}
             className="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-surface-900/60 border border-surface-800/50 hover:bg-surface-800/60 hover:border-surface-700/50 transition-all group"
@@ -231,6 +509,37 @@ export default function Home() {
               <p className="text-[10px] text-surface-500">Add manually</p>
             </div>
           </button>
+
+          <div className={`flex gap-2 ${!sidebarOpen ? "lg:hidden" : ""}`}>
+            <button
+              onClick={handleExport}
+              disabled={prompts.length === 0}
+              className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-surface-900/60 border border-surface-800/50 text-xs font-medium text-surface-300 hover:text-surface-100 hover:bg-surface-800/60 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+              title="Export as JSON bundle"
+            >
+              <Download className="h-3.5 w-3.5" />
+              Export
+            </button>
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-surface-900/60 border border-surface-800/50 text-xs font-medium text-surface-300 hover:text-surface-100 hover:bg-surface-800/60 transition-all"
+              title="Import JSON bundle"
+            >
+              <Upload className="h-3.5 w-3.5" />
+              Import
+            </button>
+          </div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="application/json,.json"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) handleImportJson(file);
+              e.target.value = "";
+            }}
+          />
         </div>
       </aside>
 
@@ -241,6 +550,7 @@ export default function Home() {
           <div className="flex items-center gap-4 flex-1">
             <button
               onClick={() => setSidebarOpen(!sidebarOpen)}
+              aria-label="Toggle sidebar"
               className="p-2 text-surface-400 hover:text-surface-100 hover:bg-surface-800/50 rounded-lg transition-colors lg:hidden"
             >
               <Menu className="h-5 w-5" />
@@ -252,12 +562,13 @@ export default function Home() {
                 ref={searchRef}
                 type="text"
                 placeholder="Search prompts..."
+                aria-label="Search prompts"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="w-full bg-surface-900/60 border border-surface-800/50 rounded-xl py-2 pl-10 pr-20 text-sm text-surface-100 placeholder:text-surface-500 focus:outline-none focus:ring-2 focus:ring-accent-500/30 focus:border-accent-500/30 transition-all"
               />
-              <kbd className="absolute right-3 top-1/2 -translate-y-1/2 hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-surface-800/80 border border-surface-700/50 text-[10px] text-surface-400 font-mono">
-                ⌘K
+              <kbd className="absolute right-3 top-1/2 -translate-y-1/2 hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-surface-800/80 border border-surface-700/50 text-[10px] text-surface-400 font-mono whitespace-nowrap">
+                {shortcutHint}
               </kbd>
             </div>
           </div>
@@ -310,7 +621,20 @@ export default function Home() {
                         Manage and organize your LLM prompts and agentic skill definitions.
                       </p>
                     </div>
-                    <div className="flex gap-2">
+                    <div className="flex items-center gap-2">
+                      <label className="relative inline-flex items-center">
+                        <ArrowUpDown className="absolute left-2.5 h-3.5 w-3.5 text-surface-500 pointer-events-none" />
+                        <select
+                          value={sortBy}
+                          onChange={(e) => setSortBy(e.target.value as SortKey)}
+                          aria-label="Sort items"
+                          className="appearance-none pl-8 pr-7 py-2 rounded-lg bg-surface-900/60 border border-surface-800/50 text-xs text-surface-300 hover:text-surface-100 focus:outline-none focus:ring-2 focus:ring-accent-500/30 cursor-pointer transition-colors"
+                        >
+                          <option value="newest">Newest first</option>
+                          <option value="oldest">Oldest first</option>
+                          <option value="name">Name A–Z</option>
+                        </select>
+                      </label>
                       {skillCount > 0 && (
                         <div className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-500/10 border border-amber-500/20 rounded-full text-amber-400 text-xs font-semibold">
                           <Zap className="h-3 w-3" />
@@ -326,7 +650,28 @@ export default function Home() {
                     </div>
                   </div>
 
-                  <LibraryView prompts={filteredPrompts} onRefresh={loadPrompts} onEdit={handleEditPrompt} />
+                  <LibraryView
+                    prompts={filteredPrompts}
+                    onEdit={handleEditPrompt}
+                    onDeleteItem={handleDeleteWithUndo}
+                    loading={loading}
+                    loadError={loadError}
+                    totalPrompts={prompts.length}
+                    filtersActive={filtersActive}
+                    onClearFilters={clearFilters}
+                    onTagClick={(tag) => {
+                      setSearchQuery(tag);
+                      setActiveCategory("all");
+                    }}
+                    onRetryLoad={
+                      loadError
+                        ? () => {
+                            setLoadError(null);
+                            setReloadKey((k) => k + 1);
+                          }
+                        : undefined
+                    }
+                  />
                 </motion.div>
               ) : (
                 <motion.div
@@ -358,7 +703,8 @@ export default function Home() {
                       <ImportSelector
                         items={scannedItems}
                         onImport={handleImport}
-                        onCancel={() => setScannedItems(null)}
+                        onCancel={handleScanCancel}
+                        existingKeys={existingKeys}
                       />
                     )}
                   </div>
@@ -402,6 +748,48 @@ export default function Home() {
         </div>
       </div>
 
+      {/* ─── Notice Toast ─────────────────────────── */}
+      <AnimatePresence>
+        {notice && (
+          <motion.div
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 16 }}
+            role="status"
+            className={`fixed bottom-6 right-6 z-[70] flex items-center gap-3 max-w-md pl-4 pr-2 py-3 rounded-xl glass shadow-2xl ${
+              notice.type === "error" ? "border border-rose-500/40" : "border border-accent-500/30"
+            }`}
+          >
+            {notice.type === "error" ? (
+              <AlertCircle className="h-4 w-4 text-rose-400 shrink-0" />
+            ) : (
+              <CheckCircle2 className="h-4 w-4 text-accent-400 shrink-0" />
+            )}
+            <p className="text-sm text-surface-100">{notice.message}</p>
+            {notice.action && (
+              <button
+                onClick={() => {
+                  void notice.action!.run();
+                  setNotice(null);
+                }}
+                className="ml-auto shrink-0 px-3 py-1 rounded-lg text-xs font-semibold text-accent-300 hover:bg-accent-500/15 transition-colors"
+              >
+                {notice.action.label}
+              </button>
+            )}
+            <button
+              onClick={() => setNotice(null)}
+              aria-label="Dismiss notification"
+              className={`p-1.5 rounded transition-colors ${
+                notice.action ? "" : "ml-auto"
+              } text-surface-400 hover:text-surface-100`}
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* ─── Create Prompt Modal ──────────────────── */}
       <AnimatePresence>
         {showCreateModal && (
@@ -411,9 +799,15 @@ export default function Home() {
           />
         )}
       </AnimatePresence>
+      </MotionConfig>
     </main>
   );
 }
+
+function useMemoExistingKeys(prompts: PromptItem[]): Set<string> {
+  return useMemo(() => new Set(prompts.map((p) => duplicateKey(p.type, p.name))), [prompts]);
+}
+
 
 /* ─── Create Prompt Modal Component ───────────── */
 
@@ -421,20 +815,50 @@ function CreatePromptModal({
   onSubmit,
   onClose,
 }: {
-  onSubmit: (name: string, content: string, type: "prompt" | "skill") => void;
+  onSubmit: (
+    name: string,
+    content: string,
+    type: "prompt" | "skill",
+    tags: string[]
+  ) => Promise<boolean>;
   onClose: () => void;
 }) {
   const [name, setName] = useState("");
   const [content, setContent] = useState("");
   const [type, setType] = useState<"prompt" | "skill">("prompt");
+  const [tags, setTags] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
+
+  const hasInput = name.trim() !== "" || content.trim() !== "" || tags.trim() !== "";
+
+  const requestClose = useCallback(() => {
+    if (hasInput && !discardConfirmOpen) {
+      setDiscardConfirmOpen(true);
+      return;
+    }
+    setDiscardConfirmOpen(false);
+    onClose();
+  }, [hasInput, discardConfirmOpen, onClose]);
+
+  const trapRef = useFocusTrap<HTMLDivElement>(true, requestClose);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim() || !content.trim()) return;
     setSubmitting(true);
-    await new Promise((r) => setTimeout(r, 400));
-    onSubmit(name.trim(), content.trim(), type);
+    setError(null);
+    try {
+      const ok = await onSubmit(name.trim(), content.trim(), type, parseTags(tags));
+      if (!ok) {
+        setError("Couldn't save your prompt. Please try again.");
+        setSubmitting(false);
+      }
+    } catch {
+      setError("Something went wrong. Please try again.");
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -443,9 +867,13 @@ function CreatePromptModal({
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm"
-      onClick={(e) => e.target === e.currentTarget && onClose()}
+      onClick={(e) => e.target === e.currentTarget && requestClose()}
     >
       <motion.div
+        ref={trapRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="pv-create-title"
         initial={{ scale: 0.95, opacity: 0, y: 16 }}
         animate={{ scale: 1, opacity: 1, y: 0 }}
         exit={{ scale: 0.95, opacity: 0, y: 16 }}
@@ -459,17 +887,54 @@ function CreatePromptModal({
               <Plus className="h-5 w-5" />
             </div>
             <div>
-              <h3 className="text-lg font-bold text-surface-50">Create Prompt</h3>
+              <h3 id="pv-create-title" className="text-lg font-bold text-surface-50">
+                Create Prompt
+              </h3>
               <p className="text-xs text-surface-500">Add a new prompt to your vault</p>
             </div>
           </div>
           <button
-            onClick={onClose}
+            onClick={requestClose}
+            aria-label="Close dialog"
             className="p-2 text-surface-400 hover:text-surface-100 hover:bg-surface-800/50 rounded-lg transition-colors"
           >
             <X className="h-5 w-5" />
           </button>
         </div>
+
+        <AnimatePresence>
+          {discardConfirmOpen && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: "auto" }}
+              exit={{ opacity: 0, height: 0 }}
+              className="overflow-hidden bg-amber-500/10 border-y border-amber-500/25"
+            >
+              <div className="px-6 py-3 flex items-center justify-between gap-4">
+                <p className="text-xs text-amber-300">
+                  Close without saving? Your input will be lost.
+                </p>
+                <div className="flex gap-2 shrink-0">
+                  <button
+                    onClick={() => setDiscardConfirmOpen(false)}
+                    className="px-3 py-1.5 rounded-lg text-xs font-medium text-surface-300 hover:text-surface-100 hover:bg-surface-800/50 transition-colors"
+                  >
+                    Keep editing
+                  </button>
+                  <button
+                    onClick={() => {
+                      setDiscardConfirmOpen(false);
+                      onClose();
+                    }}
+                    className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-500/20 border border-amber-500/30 text-amber-300 hover:bg-amber-500/30 transition-colors"
+                  >
+                    Discard
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* Modal Body */}
         <form onSubmit={handleSubmit} className="p-6 space-y-5">
@@ -483,6 +948,7 @@ function CreatePromptModal({
               onChange={(e) => setName(e.target.value)}
               placeholder="e.g. Code Review Assistant"
               autoFocus
+              aria-label="Name"
               className="w-full px-4 py-3 bg-surface-900/60 border border-surface-800/50 rounded-xl text-sm text-surface-100 placeholder:text-surface-600 focus:outline-none focus:ring-2 focus:ring-accent-500/30 focus:border-accent-500/30 transition-all"
             />
           </div>
@@ -497,6 +963,7 @@ function CreatePromptModal({
                   key={t}
                   type="button"
                   onClick={() => setType(t)}
+                  aria-pressed={type === t}
                   className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium border transition-all ${type === t
                     ? t === "prompt"
                       ? "bg-sky-500/10 border-sky-500/30 text-sky-400"
@@ -513,6 +980,24 @@ function CreatePromptModal({
 
           <div className="space-y-2">
             <label className="text-xs font-semibold text-surface-400 uppercase tracking-wider">
+              Tags
+            </label>
+            <div className="relative">
+              <Tag className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-surface-600" />
+              <input
+                type="text"
+                value={tags}
+                onChange={(e) => setTags(e.target.value)}
+                placeholder="e.g. code-review, python, production"
+                aria-label="Tags (comma-separated)"
+                className="w-full px-4 py-3 pl-11 bg-surface-900/60 border border-surface-800/50 rounded-xl text-sm text-surface-100 placeholder:text-surface-600 focus:outline-none focus:ring-2 focus:ring-accent-500/30 focus:border-accent-500/30 transition-all"
+              />
+            </div>
+            <p className="text-[10px] text-surface-500">Comma-separated.</p>
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-xs font-semibold text-surface-400 uppercase tracking-wider">
               Content
             </label>
             <textarea
@@ -520,14 +1005,21 @@ function CreatePromptModal({
               onChange={(e) => setContent(e.target.value)}
               placeholder="Enter your prompt content..."
               rows={8}
+              aria-label="Content"
               className="w-full px-4 py-3 bg-surface-900/60 border border-surface-800/50 rounded-xl text-sm text-surface-100 placeholder:text-surface-600 focus:outline-none focus:ring-2 focus:ring-accent-500/30 focus:border-accent-500/30 transition-all resize-none font-mono leading-relaxed"
             />
           </div>
 
+          {error && (
+            <div className="px-4 py-3 rounded-xl bg-rose-500/10 border border-rose-500/25 text-xs text-rose-300">
+              {error}
+            </div>
+          )}
+
           <div className="flex justify-end gap-3 pt-2">
             <button
               type="button"
-              onClick={onClose}
+              onClick={requestClose}
               className="px-5 py-2.5 text-sm font-medium text-surface-400 hover:text-surface-200 hover:bg-surface-800/40 rounded-xl transition-all"
             >
               Cancel

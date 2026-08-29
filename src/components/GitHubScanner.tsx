@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { scanGitHubRepo } from "@/lib/scanner";
 import { ScannedItem } from "@/types";
 import {
@@ -10,6 +10,7 @@ import {
   ChevronRight,
   AlertCircle,
   Sparkles,
+  KeyRound,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -22,29 +23,43 @@ export default function GitHubScanner({ onItemsScanned }: ScannerProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [step, setStep] = useState<"idle" | "scanning" | "analyzing">("idle");
+  const [token, setToken] = useState("");
+  const [showTokenField, setShowTokenField] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    return () => abortRef.current?.abort();
+  }, []);
 
   const handleScan = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!url) return;
+
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
 
     setLoading(true);
     setError(null);
     setStep("scanning");
 
     try {
-      await new Promise((r) => setTimeout(r, 1000));
       setStep("analyzing");
-      const items = await scanGitHubRepo(url);
-      await new Promise((r) => setTimeout(r, 600));
+      const items = await scanGitHubRepo(url, {
+        signal: controller.signal,
+        token: token.trim() || undefined,
+      });
       onItemsScanned(items);
-    } catch (err: any) {
+    } catch (err) {
+      if (controller.signal.aborted) return;
       setError(
-        err.message ||
-        "Repository scan failed. Ensure the URL is a valid public GitHub repository."
+        err instanceof Error
+          ? err.message
+          : "Repository scan failed. Ensure the URL is a valid public GitHub repository."
       );
       setStep("idle");
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) setLoading(false);
     }
   };
 
@@ -99,6 +114,39 @@ export default function GitHubScanner({ onItemsScanned }: ScannerProps) {
                   )}
                 </AnimatePresence>
               </div>
+            </div>
+
+            <div>
+              <button
+                type="button"
+                onClick={() => setShowTokenField((v) => !v)}
+                className="flex items-center gap-1.5 text-[11px] font-medium text-surface-500 hover:text-surface-300 transition-colors"
+              >
+                <KeyRound className="h-3 w-3" />
+                Access token {showTokenField ? "(hide)" : "(optional)"}
+                <span className="text-[9px] text-surface-600">— raises the 60/hr rate limit</span>
+              </button>
+              <AnimatePresence>
+                {showTokenField && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: "auto" }}
+                    exit={{ opacity: 0, height: 0 }}
+                    className="overflow-hidden"
+                  >
+                    <input
+                      type="password"
+                      value={token}
+                      onChange={(e) => setToken(e.target.value)}
+                      placeholder="ghp_... (kept in memory only, never stored)"
+                      autoComplete="off"
+                      disabled={loading}
+                      aria-label="GitHub personal access token"
+                      className="mt-2 w-full px-4 py-2.5 bg-surface-950/60 border border-surface-800/50 rounded-xl focus:outline-none focus:ring-2 focus:ring-accent-500/30 text-xs text-surface-100 transition-all placeholder:text-surface-600 disabled:opacity-50"
+                    />
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
 
             <button

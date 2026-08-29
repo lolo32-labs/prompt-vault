@@ -11,23 +11,29 @@ import {
   ArrowLeft,
   Info,
   Loader2,
+  FolderOpen,
 } from "lucide-react";
 import { motion } from "framer-motion";
-import { cn } from "@/lib/utils";
+import { cn, duplicateKey } from "@/lib/utils";
 
 interface ImportSelectorProps {
   items: ScannedItem[];
   onImport: (selectedItems: ScannedItem[]) => void;
   onCancel: () => void;
+  existingKeys?: Set<string>;
 }
 
 export default function ImportSelector({
   items,
   onImport,
   onCancel,
+  existingKeys,
 }: ImportSelectorProps) {
+  const isDuplicate = (item: ScannedItem) =>
+    existingKeys?.has(duplicateKey(item.type, item.name)) ?? false;
+
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(
-    new Set(items.map((i) => i.path))
+    new Set(items.filter((i) => !isDuplicate(i)).map((i) => i.path))
   );
   const [importing, setImporting] = useState(false);
 
@@ -48,10 +54,12 @@ export default function ImportSelector({
 
   const handleImport = async () => {
     setImporting(true);
-    await new Promise((r) => setTimeout(r, 1200));
     const selected = items.filter((item) => selectedPaths.has(item.path));
-    onImport(selected);
+    await onImport(selected);
+    setImporting(false);
   };
+
+  const duplicateCount = items.filter(isDuplicate).length;
 
   return (
     <div className="w-full max-w-4xl mx-auto flex flex-col gap-5 max-h-[calc(100vh-300px)]">
@@ -116,7 +124,19 @@ export default function ImportSelector({
       </div>
 
       {/* Grid */}
-      <div className="flex-1 overflow-y-auto pr-1 grid grid-cols-1 md:grid-cols-2 gap-3.5 auto-rows-max">
+      {items.length === 0 ? (
+        <div className="flex-1 flex items-center justify-center py-16">
+          <div className="text-center">
+            <FolderOpen className="h-10 w-10 text-surface-600 mx-auto mb-4" />
+            <h3 className="text-base font-semibold text-surface-300">No items found</h3>
+            <p className="text-surface-500 mt-1 text-sm max-w-xs mx-auto">
+              This repository has no recognizable <code className="text-accent-400/70">SKILL.md</code> or{" "}
+              <code className="text-accent-400/70">.prompt</code> files.
+            </p>
+          </div>
+        </div>
+      ) : (
+        <div className="flex-1 overflow-y-auto pr-1 grid grid-cols-1 md:grid-cols-2 gap-3.5 auto-rows-max">
         {items.map((item, index) => {
           const isSelected = selectedPaths.has(item.path);
           return (
@@ -148,11 +168,21 @@ export default function ImportSelector({
                     <FileText className="h-4 w-4" />
                   )}
                 </div>
-                {isSelected ? (
-                  <CheckCircle2 className="h-5 w-5 text-accent-400" />
-                ) : (
-                  <Circle className="h-5 w-5 text-surface-800 group-hover:text-surface-600" />
-                )}
+                <div className="flex items-center gap-2">
+                  {isDuplicate(item) && (
+                    <span
+                      title="Already in your vault"
+                      className="px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 text-[9px] font-semibold uppercase"
+                    >
+                      In vault
+                    </span>
+                  )}
+                  {isSelected ? (
+                    <CheckCircle2 className="h-5 w-5 text-accent-400" />
+                  ) : (
+                    <Circle className="h-5 w-5 text-surface-800 group-hover:text-surface-600" />
+                  )}
+                </div>
               </div>
 
               <div className="flex-1">
@@ -204,7 +234,8 @@ export default function ImportSelector({
             </motion.div>
           );
         })}
-      </div>
+        </div>
+      )}
 
       {/* Info footer */}
       <div className="glass rounded-xl p-3.5 border border-surface-800/40 flex items-center gap-3">
@@ -220,6 +251,15 @@ export default function ImportSelector({
           <span className="text-surface-200 font-semibold">
             {items.filter((i) => i.type === "prompt").length} prompts
           </span>
+          {duplicateCount > 0 && (
+            <>
+              {" · "}
+              <span className="text-amber-400 font-semibold">
+                {duplicateCount} already in your vault
+              </span>{" "}
+              (pre-deselected)
+            </>
+          )}
           . All data will be stored locally in your browser.
         </p>
       </div>

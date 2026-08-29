@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useMemo, useCallback, useDeferredValue } from "react";
 import { PromptItem } from "@/types";
 import {
   Copy,
@@ -18,84 +18,218 @@ import {
   Save,
   Keyboard,
   Play,
+  Tag,
+  Loader2,
+  AlertCircle,
+  AlertTriangle,
+  SearchX,
+  RefreshCw,
+  XCircle,
 } from "lucide-react";
-import { deletePrompt } from "@/lib/storage";
 import { motion, AnimatePresence } from "framer-motion";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { atomDark } from "react-syntax-highlighter/dist/esm/styles/prism";
-import { cn } from "@/lib/utils";
+import { cn, copyToClipboard } from "@/lib/utils";
+import { useFocusTrap } from "@/lib/hooks";
+import MarkdownPreview from "./MarkdownPreview";
 
 interface LibraryViewProps {
   prompts: PromptItem[];
-  onRefresh: () => void;
-  onEdit?: (prompt: PromptItem) => void;
+  onEdit?: (prompt: PromptItem) => Promise<boolean>;
+  onDeleteItem?: (item: PromptItem) => Promise<boolean>;
+  loading?: boolean;
+  loadError?: string | null;
+  totalPrompts?: number;
+  filtersActive?: boolean;
+  onClearFilters?: () => void;
+  onTagClick?: (tag: string) => void;
+  onRetryLoad?: () => void;
 }
 
-export default function LibraryView({ prompts, onRefresh, onEdit }: LibraryViewProps) {
-  const [copyStatus, setCopyStatus] = useState<string | null>(null);
+export default function LibraryView({
+  prompts,
+  onEdit,
+  onDeleteItem,
+  loading = false,
+  loadError = null,
+  totalPrompts = prompts.length,
+  filtersActive = false,
+  onClearFilters,
+  onTagClick,
+  onRetryLoad,
+}: LibraryViewProps) {
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [copyFailedId, setCopyFailedId] = useState<string | null>(null);
   const [selectedPrompt, setSelectedPrompt] = useState<PromptItem | null>(null);
   const [editingName, setEditingName] = useState<string | null>(null);
   const [editNameValue, setEditNameValue] = useState("");
   const [variableValues, setVariableValues] = useState<Record<string, string>>({});
-  const [variables, setVariables] = useState<string[]>([]);
+  const [valuesForId, setValuesForId] = useState<string | null>(null);
+  const [isEditing, setIsEditing] = useState(false);
+  const [draft, setDraft] = useState<PromptItem | null>(null);
+  const [draftTagsText, setDraftTagsText] = useState("");
+  const [editError, setEditError] = useState<string | null>(null);
+  const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
 
-  useEffect(() => {
-    if (selectedPrompt) {
-      // Find all unique matches for {{variable}}
-      const matches = Array.from(selectedPrompt.content.matchAll(/\{\{([^}]+)\}\}/g));
-      const found = matches.map((m) => m[1].trim());
-      const unique = Array.from(new Set(found));
-      setVariables(unique);
+  const openPrompt = (prompt: PromptItem) => {
+    setSelectedPrompt(prompt);
+    setIsEditing(false);
+    setDraft(null);
+    setDraftTagsText("");
+    setEditError(null);
+    setDiscardConfirmOpen(false);
+  };
 
-      // Initialize with empty strings
-      const initialValues: Record<string, string> = {};
-      unique.forEach((v) => (initialValues[v] = ""));
-      setVariableValues(initialValues);
-    } else {
-      setVariables([]);
-      setVariableValues({});
-    }
+  const variables = useMemo(() => {
+    if (!selectedPrompt) return [] as string[];
+    const matches = Array.from(selectedPrompt.content.matchAll(/\{\{([^}]+)\}\}/g));
+    const found = matches.map((m) => m[1].trim());
+    return Array.from(new Set(found));
   }, [selectedPrompt]);
 
-  const getInjectedContent = () => {
+  if (selectedPrompt && valuesForId !== selectedPrompt.id) {
+    setValuesForId(selectedPrompt.id);
+    const initialValues: Record<string, string> = {};
+    variables.forEach((v) => (initialValues[v] = ""));
+    setVariableValues(initialValues);
+  }
+
+  const injectedContent = useMemo(() => {
     if (!selectedPrompt) return "";
     let content = selectedPrompt.content;
     variables.forEach((v) => {
       const value = variableValues[v] || `{{${v}}}`;
-      // Basic escaping and replacement
       content = content.split(`{{${v}}}`).join(value);
     });
     return content;
-  };
+  }, [selectedPrompt, variables, variableValues]);
 
-  const handleCopy = (content: string, id: string) => {
-    navigator.clipboard.writeText(content);
-    setCopyStatus(id);
-    setTimeout(() => setCopyStatus(null), 2000);
-  };
+  const deferredInjected = useDeferredValue(injectedContent);
 
-  const handleDelete = async (e: React.MouseEvent, id: string) => {
-    e.stopPropagation();
-    if (confirm("Delete this prompt from your vault?")) {
-      await deletePrompt(id);
-      if (selectedPrompt?.id === id) setSelectedPrompt(null);
-      onRefresh();
+  const handleCopy = async (content: string, id: string) => {
+    const ok = await copyToClipboard(content);
+    if (ok) {
+      setCopiedId(id);
+      setCopyFailedId(null);
+    } else {
+      setCopyFailedId(id);
+      setCopiedId(null);
     }
+    setTimeout(() => {
+      setCopiedId(null);
+      setCopyFailedId(null);
+    }, 2000);
   };
 
-  const startEditName = (e: React.MouseEvent, prompt: PromptItem) => {
-    e.stopPropagation();
-    setEditingName(prompt.id);
-    setEditNameValue(prompt.name);
+  const isDraftDirty =
+    !!draft &&
+    !!selectedPrompt &&
+    (draft.name !== selectedPrompt.name ||
+      draft.content !== selectedPrompt.content ||
+      draft.type !== selectedPrompt.type ||
+      [...(draft.tags ?? [])].sort().join("|") !==
+        [...(selectedPrompt.tags ?? [])].sort().join("|"));
+
+  const exitEditMode = () => {
+    setIsEditing(false);
+    setDraft(null);
+    setDraftTagsText("");
+    setEditError(null);
+    setDiscardConfirmOpen(false);
   };
 
-  const saveEditName = (e: React.MouseEvent, prompt: PromptItem) => {
-    e.stopPropagation();
-    if (editNameValue.trim() && onEdit) {
-      onEdit({ ...prompt, name: editNameValue.trim() });
+  const requestClose = useCallback(() => {
+    if (discardConfirmOpen) {
+      setDiscardConfirmOpen(false);
+      return;
+    }
+    if (isEditing && isDraftDirty) {
+      setDiscardConfirmOpen(true);
+      return;
+    }
+    if (isEditing) {
+      setIsEditing(false);
+      setDraft(null);
+      setDraftTagsText("");
+      setEditError(null);
+    }
+    setSelectedPrompt(null);
+  }, [discardConfirmOpen, isEditing, isDraftDirty]);
+
+  const trapRef = useFocusTrap<HTMLDivElement>(!!selectedPrompt, requestClose);
+
+  const startEditing = () => {
+    if (!selectedPrompt) return;
+    setDraft({ ...selectedPrompt, tags: [...(selectedPrompt.tags ?? [])] });
+    setDraftTagsText((selectedPrompt.tags ?? []).join(", "));
+    setEditError(null);
+    setIsEditing(true);
+  };
+
+  const saveDraft = async () => {
+    if (!draft) return;
+    if (!draft.name.trim() || !draft.content.trim()) return;
+    if (!onEdit) return;
+    setEditError(null);
+    const updated: PromptItem = {
+      ...draft,
+      name: draft.name.trim(),
+      content: draft.content.trim(),
+      tags: (() => {
+        const parsed = draftTagsText
+          .split(",")
+          .map((t) => t.trim())
+          .filter(Boolean);
+        return parsed.length ? parsed : undefined;
+      })(),
+    };
+    const ok = await onEdit(updated);
+    if (!ok) {
+      setEditError("Couldn't save changes. Please try again.");
+      return;
+    }
+    setSelectedPrompt(updated);
+    exitEditMode();
+  };
+
+  const commitEditName = (prompt: PromptItem) => {
+    if (editNameValue.trim() && editNameValue !== prompt.name && onEdit) {
+      void onEdit({ ...prompt, name: editNameValue.trim() });
     }
     setEditingName(null);
   };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-24">
+        <div className="text-center space-y-3">
+          <Loader2 className="h-8 w-8 text-accent-400 animate-spin mx-auto" />
+          <p className="text-sm text-surface-500">Loading your vault...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="text-center py-24">
+        <AlertCircle className="h-8 w-8 text-rose-400 mx-auto mb-4" />
+        <h3 className="text-lg font-semibold text-surface-300">Failed to load</h3>
+        <p className="text-surface-500 mt-1 text-sm max-w-sm mx-auto">{loadError}</p>
+        {onRetryLoad && (
+          <button
+            onClick={onRetryLoad}
+            className="mt-5 inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-surface-900/60 border border-surface-800/50 text-sm font-medium text-surface-200 hover:text-surface-50 hover:bg-surface-800/60 transition-all"
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+            Try again
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  const emptyVault = totalPrompts === 0;
 
   return (
     <div className="space-y-6 pb-20">
@@ -106,7 +240,7 @@ export default function LibraryView({ prompts, onRefresh, onEdit }: LibraryViewP
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: index * 0.04, duration: 0.3, ease: "easeOut" }}
-            onClick={() => setSelectedPrompt(prompt)}
+            onClick={() => openPrompt(prompt)}
             className="group glass-card p-5 rounded-2xl cursor-pointer relative overflow-hidden"
           >
             {/* Accent bar */}
@@ -141,15 +275,17 @@ export default function LibraryView({ prompts, onRefresh, onEdit }: LibraryViewP
                       <input
                         value={editNameValue}
                         onChange={(e) => setEditNameValue(e.target.value)}
+                        aria-label="Prompt name"
                         className="flex-1 bg-surface-900 border border-surface-700 rounded-lg px-2 py-1 text-sm font-semibold text-surface-100 focus:outline-none focus:ring-1 focus:ring-accent-500/50"
                         autoFocus
                         onKeyDown={(e) => {
-                          if (e.key === "Enter") saveEditName(e as any, prompt);
+                          if (e.key === "Enter") commitEditName(prompt);
                           if (e.key === "Escape") setEditingName(null);
                         }}
                       />
                       <button
-                        onClick={(e) => saveEditName(e, prompt)}
+                        onClick={() => commitEditName(prompt)}
+                        aria-label="Save name"
                         className="p-1 text-accent-400 hover:text-accent-300"
                       >
                         <Save className="h-3.5 w-3.5" />
@@ -170,30 +306,42 @@ export default function LibraryView({ prompts, onRefresh, onEdit }: LibraryViewP
               {/* Action buttons */}
               <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200 shrink-0">
                 <button
-                  onClick={(e) => startEditName(e, prompt)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setEditingName(prompt.id);
+                    setEditNameValue(prompt.name);
+                  }}
+                  aria-label="Rename"
+                  title="Rename"
                   className="p-1.5 bg-surface-800/80 hover:bg-surface-700 rounded-lg text-surface-400 hover:text-surface-100 transition-colors"
-                  title="Edit Name"
                 >
                   <Edit3 className="h-3.5 w-3.5" />
                 </button>
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    handleCopy(prompt.content, prompt.id);
+                    void handleCopy(prompt.content, prompt.id);
                   }}
+                  aria-label={copyFailedId === prompt.id ? "Copy failed" : "Copy content"}
+                  title="Copy content"
                   className="p-1.5 bg-surface-800/80 hover:bg-surface-700 rounded-lg text-surface-400 hover:text-surface-100 transition-colors"
-                  title="Copy Content"
                 >
-                  {copyStatus === prompt.id ? (
+                  {copyFailedId === prompt.id ? (
+                    <XCircle className="h-3.5 w-3.5 text-rose-400" />
+                  ) : copiedId === prompt.id ? (
                     <Check className="h-3.5 w-3.5 text-accent-400" />
                   ) : (
                     <Copy className="h-3.5 w-3.5" />
                   )}
                 </button>
                 <button
-                  onClick={(e) => handleDelete(e, prompt.id)}
-                  className="p-1.5 bg-surface-800/80 hover:bg-rose-500/20 rounded-lg text-surface-400 hover:text-rose-400 transition-colors"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void onDeleteItem?.(prompt);
+                  }}
+                  aria-label="Delete"
                   title="Delete"
+                  className="p-1.5 bg-surface-800/80 hover:bg-rose-500/20 rounded-lg text-surface-400 hover:text-rose-400 transition-colors"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
@@ -203,7 +351,7 @@ export default function LibraryView({ prompts, onRefresh, onEdit }: LibraryViewP
             {/* Content Preview */}
             <div className="relative group/code">
               <div className="absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-surface-950/90 z-[1] rounded-xl pointer-events-none" />
-              <p className="text-xs text-surface-400 font-mono line-clamp-5 bg-surface-950/60 p-3.5 rounded-xl border border-surface-800/40 leading-relaxed">
+              <p className="text-xs text-surface-400 font-mono line-clamp-5 break-words bg-surface-950/60 p-3.5 rounded-xl border border-surface-800/40 leading-relaxed">
                 {prompt.content}
               </p>
               <div className="absolute bottom-2 right-2 opacity-0 group-hover/code:opacity-100 transition-opacity z-[2]">
@@ -212,7 +360,7 @@ export default function LibraryView({ prompts, onRefresh, onEdit }: LibraryViewP
             </div>
 
             {/* Footer Tags */}
-            <div className="mt-3 flex items-center gap-2">
+            <div className="mt-3 flex flex-wrap items-center gap-1.5">
               <span
                 className={cn(
                   "px-2 py-0.5 rounded-md text-[10px] font-semibold uppercase tracking-wider",
@@ -229,13 +377,51 @@ export default function LibraryView({ prompts, onRefresh, onEdit }: LibraryViewP
                   GitHub
                 </span>
               )}
+              {prompt.tags?.map((t) => (
+                <button
+                  key={t}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onTagClick?.(t);
+                  }}
+                  title={`Filter by “${t}”`}
+                  className="px-1.5 py-0.5 max-w-[7rem] truncate bg-surface-800/60 rounded text-[9px] text-surface-400 font-medium hover:text-accent-300 hover:bg-accent-500/10 transition-colors"
+                >
+                  #{t}
+                </button>
+              ))}
             </div>
           </motion.div>
         ))}
       </div>
 
       {/* Empty State */}
-      {prompts.length === 0 && (
+      {prompts.length === 0 && !emptyVault && (
+        <motion.div
+          initial={{ opacity: 0, y: 16 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4 }}
+          className="text-center py-24 border-2 border-dashed border-surface-800/50 rounded-2xl"
+        >
+          <div className="w-16 h-16 bg-surface-900/80 border border-surface-800/50 rounded-2xl flex items-center justify-center text-surface-600 mx-auto mb-5 shadow-inner">
+            <SearchX className="h-7 w-7" />
+          </div>
+          <h3 className="text-lg font-semibold text-surface-300">No matches</h3>
+          <p className="text-surface-500 mt-1 text-sm max-w-xs mx-auto">
+            Nothing matches your current search or filters.
+          </p>
+          {filtersActive && onClearFilters && (
+            <button
+              onClick={onClearFilters}
+              className="mt-5 inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-accent-500/10 border border-accent-500/25 text-sm font-medium text-accent-400 hover:bg-accent-500/20 transition-colors"
+            >
+              Clear search & filters
+            </button>
+          )}
+        </motion.div>
+      )}
+
+      {emptyVault && (
         <motion.div
           initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
@@ -260,9 +446,13 @@ export default function LibraryView({ prompts, onRefresh, onEdit }: LibraryViewP
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className="fixed inset-0 z-50 flex items-center justify-center p-4 md:p-8 bg-black/75 backdrop-blur-sm"
-            onClick={() => setSelectedPrompt(null)}
+            onClick={requestClose}
           >
             <motion.div
+              ref={trapRef}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="pv-detail-title"
               initial={{ scale: 0.95, opacity: 0, y: 16 }}
               animate={{ scale: 1, opacity: 1, y: 0 }}
               exit={{ scale: 0.95, opacity: 0, y: 16 }}
@@ -288,7 +478,7 @@ export default function LibraryView({ prompts, onRefresh, onEdit }: LibraryViewP
                     )}
                   </div>
                   <div className="min-w-0">
-                    <h2 className="text-xl font-bold text-surface-50 truncate">
+                    <h2 id="pv-detail-title" className="text-xl font-bold text-surface-50 truncate">
                       {selectedPrompt.name}
                     </h2>
                     <div className="flex items-center gap-3 mt-0.5">
@@ -311,22 +501,55 @@ export default function LibraryView({ prompts, onRefresh, onEdit }: LibraryViewP
                   </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
+                  {isEditing ? (
+                    <>
+                      <button
+                        onClick={requestClose}
+                        className="px-4 py-2 text-sm font-medium text-surface-400 hover:text-surface-200 hover:bg-surface-800/40 rounded-xl transition-all"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={() => void saveDraft()}
+                        disabled={!draft || !draft.name.trim() || !draft.content.trim()}
+                        className="flex items-center gap-2 px-4 py-2 gradient-accent hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-xl text-sm font-semibold transition-all active:scale-95"
+                      >
+                        <Save className="h-4 w-4" /> Save
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        onClick={startEditing}
+                        aria-label="Edit this item"
+                        title="Edit content"
+                        className="flex items-center gap-2 px-3 py-2 bg-surface-800/60 hover:bg-surface-700/60 text-surface-300 hover:text-surface-100 rounded-xl text-sm font-medium transition-all"
+                      >
+                        <Edit3 className="h-4 w-4" />
+                      </button>
+                      <button
+                        onClick={() => void handleCopy(injectedContent, selectedPrompt.id)}
+                        className="flex items-center gap-2 px-4 py-2 gradient-accent hover:opacity-90 text-white rounded-xl text-sm font-semibold transition-all active:scale-95"
+                      >
+                        {copyFailedId === selectedPrompt.id ? (
+                          <>
+                            <XCircle className="h-4 w-4" /> Failed
+                          </>
+                        ) : copiedId === selectedPrompt.id ? (
+                          <>
+                            <Check className="h-4 w-4" /> Copied!
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="h-4 w-4" /> Copy
+                          </>
+                        )}
+                      </button>
+                    </>
+                  )}
                   <button
-                    onClick={() => handleCopy(getInjectedContent(), selectedPrompt.id)}
-                    className="flex items-center gap-2 px-4 py-2 gradient-accent hover:opacity-90 text-white rounded-xl text-sm font-semibold transition-all active:scale-95"
-                  >
-                    {copyStatus === selectedPrompt.id ? (
-                      <>
-                        <Check className="h-4 w-4" /> Copied!
-                      </>
-                    ) : (
-                      <>
-                        <Copy className="h-4 w-4" /> Copy
-                      </>
-                    )}
-                  </button>
-                  <button
-                    onClick={() => setSelectedPrompt(null)}
+                    onClick={requestClose}
+                    aria-label="Close dialog"
                     className="p-2 text-surface-400 hover:text-surface-100 hover:bg-surface-800/50 rounded-lg transition-colors"
                   >
                     <X className="h-5 w-5" />
@@ -334,91 +557,227 @@ export default function LibraryView({ prompts, onRefresh, onEdit }: LibraryViewP
                 </div>
               </div>
 
+              {/* Unsaved-changes guard */}
+              <AnimatePresence>
+                {discardConfirmOpen && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: "auto" }}
+                    exit={{ opacity: 0, height: 0 }}
+                    className="overflow-hidden bg-amber-500/10 border-b border-amber-500/25 shrink-0"
+                  >
+                    <div className="px-5 py-3 flex items-center justify-between gap-4">
+                      <p className="text-xs text-amber-300 flex items-center gap-2">
+                        <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                        You have unsaved changes.
+                      </p>
+                      <div className="flex gap-2 shrink-0">
+                        <button
+                          onClick={() => setDiscardConfirmOpen(false)}
+                          className="px-3 py-1.5 rounded-lg text-xs font-medium text-surface-300 hover:text-surface-100 hover:bg-surface-800/50 transition-colors"
+                        >
+                          Keep editing
+                        </button>
+                        <button
+                          onClick={() => {
+                            exitEditMode();
+                            setSelectedPrompt(null);
+                          }}
+                          className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-500/20 border border-amber-500/30 text-amber-300 hover:bg-amber-500/30 transition-colors"
+                        >
+                          Discard changes
+                        </button>
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
               {/* Modal Content */}
               <div className="flex-1 overflow-y-auto p-6">
                 <div className="max-w-4xl mx-auto space-y-8">
-                  {/* Playground Section */}
-                  {variables.length > 0 && (
-                    <div className="space-y-4">
-                      <div className="flex items-center gap-2 text-xs font-semibold text-surface-400 uppercase tracking-widest">
-                        <Keyboard className="h-3.5 w-3.5 text-amber-500" />
-                        Variable Playground
-                      </div>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        {variables.map((v) => (
-                          <div key={v} className="space-y-1.5">
-                            <label className="text-[10px] font-bold text-surface-500 uppercase tracking-tighter ml-1">
-                              {v}
-                            </label>
-                            <input
-                              type="text"
-                              placeholder={`Enter value for ${v}...`}
-                              value={variableValues[v] || ""}
-                              onChange={(e) =>
-                                setVariableValues((prev) => ({ ...prev, [v]: e.target.value }))
-                              }
-                              className="w-full bg-surface-900 border border-surface-800 rounded-xl px-4 py-2.5 text-sm text-surface-100 placeholder:text-surface-600 focus:outline-none focus:ring-1 focus:ring-amber-500/30 focus:border-amber-500/50 transition-all"
-                            />
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Preview Section */}
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2 text-xs font-semibold text-surface-400 uppercase tracking-widest">
-                        <Code className="h-3.5 w-3.5 text-accent-400" />
-                        {variables.length > 0 ? "Live Preview" : "Content"}
-                      </div>
-                      {variables.length > 0 && (
-                        <div className="flex items-center gap-1.5 text-[10px] text-amber-500/80 font-medium bg-amber-500/5 px-2 py-0.5 rounded-full border border-amber-500/10">
-                          <Play className="h-2.5 w-2.5" />
-                          Variables Active
+                  {isEditing && draft ? (
+                    <div className="space-y-5">
+                      {editError && (
+                        <div className="px-4 py-3 rounded-xl bg-rose-500/10 border border-rose-500/25 text-xs text-rose-300">
+                          {editError}
                         </div>
                       )}
-                    </div>
-                    <div className="rounded-xl overflow-hidden border border-surface-800/50 bg-surface-950/60">
-                      <SyntaxHighlighter
-                        language={selectedPrompt.type === "skill" ? "markdown" : "text"}
-                        style={atomDark}
-                        customStyle={{
-                          background: "transparent",
-                          padding: "1.25rem",
-                          fontSize: "0.8125rem",
-                          lineHeight: "1.7",
-                          margin: 0,
-                        }}
-                      >
-                        {getInjectedContent()}
-                      </SyntaxHighlighter>
-                    </div>
-                  </div>
 
-                  {selectedPrompt.type === "skill" && (
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div className="glass p-5 rounded-xl border border-surface-800/40">
-                        <h4 className="font-semibold text-surface-200 mb-2 flex items-center gap-2 text-sm">
-                          <Zap className="h-4 w-4 text-amber-400" />
-                          Skill Manifest
-                        </h4>
-                        <p className="text-xs text-surface-500 leading-relaxed">
-                          This asset is an agentic skill definition following the standard for
-                          tool/skill specification, including system prompt segments and dependency links.
-                        </p>
+                      <div className="space-y-2">
+                        <label className="text-xs font-semibold text-surface-400 uppercase tracking-wider">
+                          Name
+                        </label>
+                        <input
+                          type="text"
+                          value={draft.name}
+                          onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+                          aria-label="Name"
+                          className="w-full px-4 py-3 bg-surface-900/60 border border-surface-800/50 rounded-xl text-sm text-surface-100 focus:outline-none focus:ring-2 focus:ring-accent-500/30 focus:border-accent-500/30 transition-all"
+                        />
                       </div>
-                      <div className="glass p-5 rounded-xl border border-surface-800/40">
-                        <h4 className="font-semibold text-surface-200 mb-2 flex items-center gap-2 text-sm">
-                          <ExternalLink className="h-4 w-4 text-accent-400" />
-                          Source
-                        </h4>
-                        <p className="text-xs text-surface-500 leading-relaxed">
-                          Origin: {selectedPrompt.sourceUrl || "Local manual entry"}.
-                          Stored locally in your IndexedDB vault.
-                        </p>
+
+                      <div className="space-y-2">
+                        <label className="text-xs font-semibold text-surface-400 uppercase tracking-wider">
+                          Type
+                        </label>
+                        <div className="flex gap-3">
+                          {(["prompt", "skill"] as const).map((t) => (
+                            <button
+                              key={t}
+                              type="button"
+                              onClick={() => setDraft({ ...draft, type: t })}
+                              aria-pressed={draft.type === t}
+                              className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium border transition-all ${draft.type === t
+                                ? t === "prompt"
+                                  ? "bg-sky-500/10 border-sky-500/30 text-sky-400"
+                                  : "bg-amber-500/10 border-amber-500/30 text-amber-400"
+                                : "bg-surface-900/40 border-surface-800/50 text-surface-400 hover:text-surface-200 hover:bg-surface-800/40"
+                                }`}
+                            >
+                              {t === "prompt" ? <FileText className="h-4 w-4" /> : <Zap className="h-4 w-4" />}
+                              {t === "prompt" ? "Prompt" : "Skill"}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        <label className="text-xs font-semibold text-surface-400 uppercase tracking-wider">
+                          Tags
+                        </label>
+                        <input
+                          type="text"
+                          value={draftTagsText}
+                          onChange={(e) => setDraftTagsText(e.target.value)}
+                          placeholder="Comma-separated, e.g. code-review, python"
+                          aria-label="Tags (comma-separated)"
+                          className="w-full px-4 py-3 bg-surface-900/60 border border-surface-800/50 rounded-xl text-sm text-surface-100 placeholder:text-surface-600 focus:outline-none focus:ring-2 focus:ring-accent-500/30 focus:border-accent-500/30 transition-all"
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <label className="text-xs font-semibold text-surface-400 uppercase tracking-wider">
+                          Content
+                        </label>
+                        <textarea
+                          value={draft.content}
+                          onChange={(e) => setDraft({ ...draft, content: e.target.value })}
+                          rows={16}
+                          aria-label="Content"
+                          className="w-full px-4 py-3 bg-surface-900/60 border border-surface-800/50 rounded-xl text-sm text-surface-100 focus:outline-none focus:ring-2 focus:ring-accent-500/30 focus:border-accent-500/30 transition-all resize-y font-mono leading-relaxed"
+                        />
                       </div>
                     </div>
+                  ) : (
+                    <>
+                      {selectedPrompt.tags && selectedPrompt.tags.length > 0 && (
+                        <div className="flex flex-wrap items-center gap-2">
+                          {selectedPrompt.tags.map((t) => (
+                            <button
+                              key={t}
+                              onClick={() => onTagClick?.(t)}
+                              title={`Filter by “${t}”`}
+                              className="px-2.5 py-1 max-w-[10rem] truncate bg-surface-800/60 border border-surface-700/50 rounded-full text-[11px] text-surface-300 font-medium hover:border-accent-500/40 hover:text-accent-300 transition-colors"
+                            >
+                              <Tag className="inline h-3 w-3 mr-1 text-accent-400" />
+                              {t}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Playground Section */}
+                      {variables.length > 0 && (
+                        <div className="space-y-4">
+                          <div className="flex items-center gap-2 text-xs font-semibold text-surface-400 uppercase tracking-widest">
+                            <Keyboard className="h-3.5 w-3.5 text-amber-500" />
+                            Variable Playground
+                          </div>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {variables.map((v) => (
+                              <div key={v} className="space-y-1.5">
+                                <label className="text-[10px] font-bold text-surface-500 uppercase tracking-tighter ml-1">
+                                  {v}
+                                </label>
+                                <input
+                                  type="text"
+                                  placeholder={`Enter value for ${v}...`}
+                                  aria-label={`Value for ${v}`}
+                                  value={variableValues[v] || ""}
+                                  onChange={(e) =>
+                                    setVariableValues((prev) => ({ ...prev, [v]: e.target.value }))
+                                  }
+                                  className="w-full bg-surface-900 border border-surface-800 rounded-xl px-4 py-2.5 text-sm text-surface-100 placeholder:text-surface-600 focus:outline-none focus:ring-1 focus:ring-amber-500/30 focus:border-amber-500/50 transition-all"
+                                />
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Preview Section */}
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2 text-xs font-semibold text-surface-400 uppercase tracking-widest">
+                            <Code className="h-3.5 w-3.5 text-accent-400" />
+                            {variables.length > 0 ? "Live Preview" : "Content"}
+                          </div>
+                          {variables.length > 0 && (
+                            <div className="flex items-center gap-1.5 text-[10px] text-amber-500/80 font-medium bg-amber-500/5 px-2 py-0.5 rounded-full border border-amber-500/10">
+                              <Play className="h-2.5 w-2.5" />
+                              Variables Active
+                            </div>
+                          )}
+                        </div>
+                        <div className="rounded-xl overflow-hidden border border-surface-800/50 bg-surface-950/60">
+                          {selectedPrompt.type === "skill" ? (
+                            <div className="p-6">
+                              <MarkdownPreview content={deferredInjected} />
+                            </div>
+                          ) : (
+                            <SyntaxHighlighter
+                              language="text"
+                              style={atomDark}
+                              customStyle={{
+                                background: "transparent",
+                                padding: "1.25rem",
+                                fontSize: "0.8125rem",
+                                lineHeight: "1.7",
+                                margin: 0,
+                              }}
+                            >
+                              {deferredInjected}
+                            </SyntaxHighlighter>
+                          )}
+                        </div>
+                      </div>
+
+                      {selectedPrompt.type === "skill" && (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div className="glass p-5 rounded-xl border border-surface-800/40">
+                            <h4 className="font-semibold text-surface-200 mb-2 flex items-center gap-2 text-sm">
+                              <Zap className="h-4 w-4 text-amber-400" />
+                              Skill Manifest
+                            </h4>
+                            <p className="text-xs text-surface-500 leading-relaxed">
+                              This asset is an agentic skill definition following the standard for
+                              tool/skill specification, including system prompt segments and dependency links.
+                            </p>
+                          </div>
+                          <div className="glass p-5 rounded-xl border border-surface-800/40">
+                            <h4 className="font-semibold text-surface-200 mb-2 flex items-center gap-2 text-sm">
+                              <ExternalLink className="h-4 w-4 text-accent-400" />
+                              Source
+                            </h4>
+                            <p className="text-xs text-surface-500 leading-relaxed">
+                              Origin: {selectedPrompt.sourceUrl || "Local manual entry"}.
+                              Stored locally in your IndexedDB vault.
+                            </p>
+                          </div>
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
               </div>
