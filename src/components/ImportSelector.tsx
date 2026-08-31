@@ -12,15 +12,20 @@ import {
   Info,
   Loader2,
   FolderOpen,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import { motion } from "framer-motion";
 import { cn, duplicateKey } from "@/lib/utils";
 
 interface ImportSelectorProps {
   items: ScannedItem[];
-  onImport: (selectedItems: ScannedItem[]) => void;
+  onImport: (selectedItems: ScannedItem[], options?: { replaceDuplicates?: boolean }) => void | Promise<void>;
   onCancel: () => void;
   existingKeys?: Set<string>;
+  repo?: { owner: string; repo: string };
+  watched?: boolean;
+  onWatch?: () => void | Promise<void>;
 }
 
 export default function ImportSelector({
@@ -28,6 +33,9 @@ export default function ImportSelector({
   onImport,
   onCancel,
   existingKeys,
+  repo,
+  watched,
+  onWatch,
 }: ImportSelectorProps) {
   const isDuplicate = (item: ScannedItem) =>
     existingKeys?.has(duplicateKey(item.type, item.name)) ?? false;
@@ -52,14 +60,17 @@ export default function ImportSelector({
     setSelectedPaths(new Set());
   };
 
-  const handleImport = async () => {
+  const handleImport = async (options?: { replaceDuplicates?: boolean }) => {
     setImporting(true);
     const selected = items.filter((item) => selectedPaths.has(item.path));
-    await onImport(selected);
+    await onImport(selected, options);
     setImporting(false);
   };
 
   const duplicateCount = items.filter(isDuplicate).length;
+  const newCount = items.filter((i) => i.watchStatus === "new").length;
+  const changedCount = items.filter((i) => i.watchStatus === "changed").length;
+  const isReview = newCount + changedCount > 0;
 
   return (
     <div className="w-full max-w-4xl mx-auto flex flex-col gap-5 max-h-[calc(100vh-300px)]">
@@ -75,19 +86,42 @@ export default function ImportSelector({
           <div>
             <div className="flex items-center gap-2 mb-0.5">
               <h2 className="text-lg font-bold text-surface-50 tracking-tight">
-                Scan Results
+                {isReview ? "Updates Found" : "Scan Results"}
               </h2>
               <span className="px-2 py-0.5 bg-accent-500/10 border border-accent-500/20 rounded-full text-accent-400 text-[10px] font-semibold">
                 {items.length} found
               </span>
+              {isReview && repo && (
+                <span className="px-2 py-0.5 bg-surface-800 border border-surface-700/50 rounded-full text-surface-400 text-[10px] font-medium font-mono truncate max-w-[12rem]">
+                  {repo.owner}/{repo.repo}
+                </span>
+              )}
             </div>
             <p className="text-surface-500 text-xs">
-              Select items to import into your vault.
+              {isReview
+                ? "New and changed files since your last check."
+                : "Select items to import into your vault."}
             </p>
           </div>
         </div>
 
         <div className="flex items-center gap-3">
+          {repo && onWatch && (
+            <button
+              onClick={() => void onWatch()}
+              disabled={watched}
+              title={watched ? "Already watching this repo" : "Get notified when this repo changes"}
+              className={cn(
+                "flex items-center gap-1.5 px-3 py-2 rounded-lg border text-xs font-medium transition-all",
+                watched
+                  ? "border-surface-800/50 bg-surface-900/40 text-surface-500 cursor-default"
+                  : "border-accent-500/25 bg-accent-500/10 text-accent-400 hover:bg-accent-500/20"
+              )}
+            >
+              {watched ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+              {watched ? "Watching" : "Watch repo"}
+            </button>
+          )}
           <div className="flex items-center gap-2">
             <button
               onClick={selectAll}
@@ -104,7 +138,7 @@ export default function ImportSelector({
             </button>
           </div>
           <button
-            onClick={handleImport}
+            onClick={() => void handleImport(isReview ? { replaceDuplicates: true } : undefined)}
             disabled={selectedPaths.size === 0 || importing}
             className="px-5 py-2.5 gradient-accent hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed text-white font-semibold rounded-xl flex items-center gap-2 transition-all shadow-lg shadow-accent-500/15 active:scale-[0.98] text-sm"
           >
@@ -169,10 +203,20 @@ export default function ImportSelector({
                   )}
                 </div>
                 <div className="flex items-center gap-2">
+                  {item.watchStatus === "new" && (
+                    <span className="px-1.5 py-0.5 rounded bg-accent-500/15 text-accent-400 text-[9px] font-semibold uppercase">
+                      New
+                    </span>
+                  )}
+                  {item.watchStatus === "changed" && (
+                    <span className="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 text-[9px] font-semibold uppercase">
+                      Changed
+                    </span>
+                  )}
                   {isDuplicate(item) && (
                     <span
                       title="Already in your vault"
-                      className="px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 text-[9px] font-semibold uppercase"
+                      className="px-1.5 py-0.5 rounded bg-surface-800 text-surface-500 text-[9px] font-semibold uppercase"
                     >
                       In vault
                     </span>
@@ -243,24 +287,34 @@ export default function ImportSelector({
           <Info className="h-4 w-4" />
         </div>
         <p className="text-[11px] text-surface-400 leading-relaxed">
-          Found{" "}
-          <span className="text-surface-200 font-semibold">
-            {items.filter((i) => i.type === "skill").length} skills
-          </span>{" "}
-          and{" "}
-          <span className="text-surface-200 font-semibold">
-            {items.filter((i) => i.type === "prompt").length} prompts
-          </span>
-          {duplicateCount > 0 && (
+          {isReview ? (
             <>
-              {" · "}
-              <span className="text-amber-400 font-semibold">
-                {duplicateCount} already in your vault
+              <span className="text-accent-400 font-semibold">{newCount} new</span> and{" "}
+              <span className="text-amber-400 font-semibold">{changedCount} changed</span> since
+              your last check. Changed items update the existing entry.
+            </>
+          ) : (
+            <>
+              Found{" "}
+              <span className="text-surface-200 font-semibold">
+                {items.filter((i) => i.type === "skill").length} skills
               </span>{" "}
-              (pre-deselected)
+              and{" "}
+              <span className="text-surface-200 font-semibold">
+                {items.filter((i) => i.type === "prompt").length} prompts
+              </span>
+              {duplicateCount > 0 && (
+                <>
+                  {" · "}
+                  <span className="text-amber-400 font-semibold">
+                    {duplicateCount} already in your vault
+                  </span>{" "}
+                  (pre-deselected)
+                </>
+              )}
+              . All data will be stored locally in your browser.
             </>
           )}
-          . All data will be stored locally in your browser.
         </p>
       </div>
     </div>

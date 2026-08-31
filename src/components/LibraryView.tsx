@@ -481,6 +481,11 @@ export default function LibraryView({
                     <h2 id="pv-detail-title" className="text-xl font-bold text-surface-50 truncate">
                       {selectedPrompt.name}
                     </h2>
+                    {selectedPrompt.description && (
+                      <p className="text-[11px] text-surface-500 mt-0.5 line-clamp-1">
+                        {selectedPrompt.description}
+                      </p>
+                    )}
                     <div className="flex items-center gap-3 mt-0.5">
                       <span className="text-[10px] text-surface-500 flex items-center gap-1">
                         <Clock className="h-3 w-3" />

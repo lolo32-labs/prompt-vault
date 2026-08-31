@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { scanGitHubRepo } from "@/lib/scanner";
+import { scanGitHubRepo, parseRepoUrl } from "@/lib/scanner";
 import { ScannedItem } from "@/types";
 import {
   Search,
@@ -15,7 +15,10 @@ import {
 import { motion, AnimatePresence } from "framer-motion";
 
 interface ScannerProps {
-  onItemsScanned: (items: ScannedItem[]) => void;
+  onItemsScanned: (
+    items: ScannedItem[],
+    repo: { owner: string; repo: string }
+  ) => void;
 }
 
 export default function GitHubScanner({ onItemsScanned }: ScannerProps) {
@@ -49,7 +52,9 @@ export default function GitHubScanner({ onItemsScanned }: ScannerProps) {
         signal: controller.signal,
         token: token.trim() || undefined,
       });
-      onItemsScanned(items);
+      const repoRef = parseRepoUrl(url);
+      if (repoRef) onItemsScanned(items, repoRef);
+      else onItemsScanned(items, { owner: "", repo: "" });
     } catch (err) {
       if (controller.signal.aborted) return;
       setError(

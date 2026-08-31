@@ -145,6 +145,139 @@ export function extractDependencies(content: string): string[] {
   return dependencies;
 }
 
+export function isCandidatePath(path: string): boolean {
+  return path.endsWith("SKILL.md") || path.endsWith(".prompt") || path.includes("prompts/");
+}
+
+export interface RepoTreeSnapshot {
+  etag?: string;
+  /** path → blob sha, candidates only */
+  files: Record<string, string>;
+}
+
+export type RepoTreeResult =
+  | { status: "not-modified" }
+  | { status: "ok"; snapshot: RepoTreeSnapshot };
+
+/**
+ * Fetch the repository tree, using `If-None-Match` when an etag is supplied.
+ * A `304` response costs nothing against meaningful rate limits and signals
+ * the caller that nothing changed.
+ */
+export async function fetchRepoTree(
+  owner: string,
+  repo: string,
+  options: { branch: string; etag?: string; token?: string; signal?: AbortSignal }
+): Promise<RepoTreeResult> {
+  const { branch, etag, token, signal } = options;
+  const headers = githubHeaders(token);
+  if (etag) headers["If-None-Match"] = etag;
+
+  const response = await fetchWithTimeout(
+    `https://api.github.com/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`,
+    { headers, signal }
+  );
+  if (response.status === 304) return { status: "not-modified" };
+  if (response.status === 401) throw new Error("GitHub rejected the access token. Check it and try again.");
+  if (response.status === 403) throw new Error(RATE_LIMIT_MESSAGE);
+  if (response.status === 404)
+    throw new Error("Repository not found. It may be private or deleted.");
+  if (!response.ok) throw new Error("Failed to fetch repository structure");
+
+  const data: {
+    tree?: Array<{ type?: string; path?: string; sha?: string }>;
+    truncated?: boolean;
+  } = await response.json();
+
+  if (data.truncated) {
+    throw new Error("Repository is too large to scan in full. Try a repository with fewer files.");
+  }
+
+  const files: Record<string, string> = {};
+  for (const item of data.tree ?? []) {
+    if (item.type === "blob" && item.path && item.sha && isCandidatePath(item.path)) {
+      files[item.path] = item.sha;
+    }
+  }
+
+  return {
+    status: "ok",
+    snapshot: { etag: response.headers.get("etag") ?? undefined, files },
+  };
+}
+
+function buildScannedItem(
+  owner: string,
+  repo: string,
+  branch: string,
+  path: string,
+  content: string,
+  watchStatus?: "new" | "changed"
+): ScannedItem {
+  const type = path.endsWith("SKILL.md") ? ("skill" as const) : ("prompt" as const);
+
+  let name = deriveNameFromPath(path);
+  let description: string | undefined;
+
+  if (type === "skill") {
+    const frontmatter = parseFrontmatter(content);
+    if (frontmatter.name) {
+      name = frontmatter.name
+        .split("-")
+        .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+        .join(" ");
+    }
+    if (frontmatter.description) {
+      description = frontmatter.description;
+    }
+  }
+
+  return {
+    name,
+    description,
+    path,
+    type,
+    content,
+    sourceUrl: `https://github.com/${owner}/${repo}/blob/${branch}/${path}`,
+    dependencies: extractDependencies(content),
+    watchStatus,
+  };
+}
+
+/**
+ * Fetch the contents of specific files and build ScannedItems.
+ * Per-file failures are tolerated (skipped) unless the request is aborted.
+ */
+export async function fetchRepoFiles(
+  owner: string,
+  repo: string,
+  branch: string,
+  paths: string[],
+  options: { token?: string; signal?: AbortSignal; watchStatus?: "new" | "changed" } = {}
+): Promise<ScannedItem[]> {
+  const { token, signal, watchStatus } = options;
+
+  const items = await Promise.all(
+    paths.map(async (path): Promise<ScannedItem | null> => {
+      try {
+        const contentUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${path}`;
+        const contentResponse = await fetchWithTimeout(contentUrl, {
+          signal,
+          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        });
+        if (!contentResponse.ok) return null;
+        const content = await contentResponse.text();
+        return buildScannedItem(owner, repo, branch, path, content, watchStatus);
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") throw err;
+        return null;
+      }
+    })
+  );
+
+  return items.filter((item): item is ScannedItem => item !== null);
+}
+
 export async function scanGitHubRepo(
   url: string,
   options: { signal?: AbortSignal; token?: string } = {}
@@ -155,73 +288,9 @@ export async function scanGitHubRepo(
   const { owner, repo } = parsed;
 
   const branch = await fetchRepoDefaultBranch(owner, repo, token, signal);
+  const tree = await fetchRepoTree(owner, repo, { branch, token, signal });
+  if (tree.status === "not-modified") return [];
 
-  const treeUrl = `https://api.github.com/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`;
-  const treeResponse = await fetchWithTimeout(treeUrl, {
-    headers: githubHeaders(token),
-    signal,
-  });
-  if (treeResponse.status === 401) throw new Error("GitHub rejected the access token. Check it and try again.");
-  if (treeResponse.status === 403) throw new Error(RATE_LIMIT_MESSAGE);
-  if (!treeResponse.ok) throw new Error("Failed to fetch repository structure");
-
-  const data: { tree?: Array<{ type?: string; path?: string }>; truncated?: boolean } =
-    await treeResponse.json();
-  const files = (data.tree ?? []).filter((item) => item.type === "blob");
-
-  if (data.truncated) {
-    throw new Error(
-      "Repository is too large to scan in full. Try a repository with fewer files."
-    );
-  }
-
-  const candidates = files.filter((file) => {
-    const path = file.path ?? "";
-    return path.endsWith("SKILL.md") || path.endsWith(".prompt") || path.includes("prompts/");
-  });
-
-  const scanned = await Promise.all(
-    candidates.map(async (file): Promise<ScannedItem | null> => {
-      const path = file.path as string;
-      try {
-        const contentUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${path}`;
-        const contentResponse = await fetchWithTimeout(contentUrl, { signal });
-        if (!contentResponse.ok) return null;
-
-        const content = await contentResponse.text();
-        const type = path.endsWith("SKILL.md") ? ("skill" as const) : ("prompt" as const);
-
-        let name = deriveNameFromPath(path);
-        let description: string | undefined;
-
-        if (type === "skill") {
-          const frontmatter = parseFrontmatter(content);
-          if (frontmatter.name) {
-            name = frontmatter.name
-              .split("-")
-              .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-              .join(" ");
-          }
-          if (frontmatter.description) {
-            description = frontmatter.description;
-          }
-        }
-
-        return {
-          name,
-          description,
-          path,
-          type,
-          content,
-          sourceUrl: `https://github.com/${owner}/${repo}/blob/${branch}/${path}`,
-          dependencies: extractDependencies(content),
-        };
-      } catch (err) {
-        if (err instanceof DOMException && err.name === "AbortError") throw err;
-        return null;
-      }
-    })
-  );
-
-  return scanned.filter((item): item is ScannedItem => item !== null);
+  const paths = Object.keys(tree.snapshot.files);
+  return fetchRepoFiles(owner, repo, branch, paths, { token, signal });
 }

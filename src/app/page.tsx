@@ -4,16 +4,23 @@ import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import GitHubScanner from "@/components/GitHubScanner";
 import ImportSelector from "@/components/ImportSelector";
 import LibraryView from "@/components/LibraryView";
-import { ScannedItem, PromptItem } from "@/types";
+import WatchList from "@/components/WatchList";
+import { ScannedItem, PromptItem, WatchedRepo, WatchCheckResult } from "@/types";
 import {
   getAllPrompts,
   savePrompt,
   savePrompts,
   updatePrompt,
   deletePrompt,
+  listWatches,
+  saveWatch,
+  removeWatch,
+  getWatch,
 } from "@/lib/storage";
 import { generateId, parseTags, duplicateKey, formatFileDate } from "@/lib/utils";
 import { useDebouncedValue, useFocusTrap } from "@/lib/hooks";
+import { checkWatch, checkWatches } from "@/lib/watch";
+import { fetchRepoFiles } from "@/lib/scanner";
 import {
   LayoutGrid,
   Plus,
@@ -48,6 +55,21 @@ interface Notice {
 
 const SORT_STORAGE_KEY = "prompt-vault:sort";
 
+function fetchReviewItems(
+  watch: WatchedRepo,
+  result: WatchCheckResult
+): Promise<ScannedItem[]> {
+  if (!watch.branch) return Promise.resolve([]);
+  return Promise.all([
+    result.added.length
+      ? fetchRepoFiles(watch.owner, watch.repo, watch.branch, result.added, { watchStatus: "new" })
+      : Promise.resolve([] as ScannedItem[]),
+    result.changed.length
+      ? fetchRepoFiles(watch.owner, watch.repo, watch.branch, result.changed, { watchStatus: "changed" })
+      : Promise.resolve([] as ScannedItem[]),
+  ]).then(([newItems, changedItems]) => [...newItems, ...changedItems]);
+}
+
 export default function Home() {
   const [prompts, setPrompts] = useState<PromptItem[]>([]);
   const [scannedItems, setScannedItems] = useState<ScannedItem[] | null>(null);
@@ -62,8 +84,15 @@ export default function Home() {
   const [reloadKey, setReloadKey] = useState(0);
   const [sortBy, setSortBy] = useState<SortKey>("newest");
   const [shortcutHint, setShortcutHint] = useState("⌘K");
+  const [scannedRepo, setScannedRepo] = useState<{ owner: string; repo: string } | null>(null);
+  const [watches, setWatches] = useState<WatchedRepo[]>([]);
+  const [watchResults, setWatchResults] = useState<Record<string, WatchCheckResult>>({});
+  const [checkingAll, setCheckingAll] = useState(false);
+  const [reviewItems, setReviewItems] = useState<Record<string, ScannedItem[]>>({});
+  const [activeReviewRepo, setActiveReviewRepo] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const pollStartedRef = useRef(false);
 
   const showNotice = useCallback(
     (
@@ -147,44 +176,81 @@ export default function Home() {
     return () => clearTimeout(timer);
   }, [notice]);
 
-  const handleItemsScanned = (items: ScannedItem[]) => {
+  const handleItemsScanned = (
+    items: ScannedItem[],
+    repo: { owner: string; repo: string }
+  ) => {
     setScannedItems(items);
+    setScannedRepo(repo);
   };
 
   const handleScanCancel = () => {
     setScannedItems(null);
+    setScannedRepo(null);
   };
 
-  const handleImport = async (selected: ScannedItem[]) => {
+  const handleImport = async (
+    selected: ScannedItem[],
+    options?: { replaceDuplicates?: boolean }
+  ) => {
     try {
       const existing = await getAllPrompts();
-      const existingKeys = new Set(existing.map((p) => duplicateKey(p.type, p.name)));
+      const byKey = new Map(existing.map((p) => [duplicateKey(p.type, p.name), p]));
+      const toSave: PromptItem[] = [];
+      let added = 0;
+      let updated = 0;
 
-      const fresh = selected.filter(
-        (item) => !existingKeys.has(duplicateKey(item.type, item.name))
-      );
-      const skipped = selected.length - fresh.length;
+      for (const item of selected) {
+        const match = byKey.get(duplicateKey(item.type, item.name));
+        if (match) {
+          if (options?.replaceDuplicates) {
+            toSave.push({
+              ...match,
+              content: item.content,
+              sourceUrl: item.sourceUrl ?? match.sourceUrl,
+              description: item.description ?? match.description,
+            });
+            updated++;
+          }
+        } else {
+          toSave.push({
+            id: generateId(),
+            name: item.name,
+            content: item.content,
+            type: item.type,
+            createdAt: Date.now(),
+            sourceUrl:
+              item.sourceUrl && /^https?:\/\//i.test(item.sourceUrl)
+                ? item.sourceUrl
+                : undefined,
+            description: item.description,
+          });
+          added++;
+        }
+      }
 
-      await savePrompts(
-        fresh.map((item) => ({
-          id: generateId(),
-          name: item.name,
-          content: item.content,
-          type: item.type,
-          createdAt: Date.now(),
-          sourceUrl: item.sourceUrl && /^https?:\/\//i.test(item.sourceUrl) ? item.sourceUrl : undefined,
-          description: item.description,
-        }))
-      );
+      await savePrompts(toSave);
+      const skipped = selected.length - added - updated;
 
       setScannedItems(null);
+      setScannedRepo(null);
       setView("library");
       await loadPrompts();
-      showNotice(
-        skipped > 0
-          ? `Imported ${fresh.length} item${fresh.length === 1 ? "" : "s"} (${skipped} duplicate${skipped === 1 ? "" : "s"} skipped).`
-          : `Imported ${fresh.length} item${fresh.length === 1 ? "" : "s"}.`
-      );
+
+      if (activeReviewRepo && options?.replaceDuplicates) {
+        setReviewItems((prev) => {
+          const next = { ...prev };
+          delete next[activeReviewRepo];
+          return next;
+        });
+        setActiveReviewRepo(null);
+      }
+
+      const parts: string[] = [];
+      if (added) parts.push(`${added} added`);
+      if (updated) parts.push(`${updated} updated`);
+      if (skipped) parts.push(`${skipped} duplicate${skipped === 1 ? "" : "s"} skipped`);
+      showNotice(parts.length ? `Import complete: ${parts.join(", ")}.` : "Nothing to import.");
     } catch (err) {
       console.error(err);
       showNotice(
@@ -233,6 +299,160 @@ export default function Home() {
     await loadPrompts();
     return true;
   };
+
+  const runCheckAll = useCallback(
+    async (toCheck?: WatchedRepo[], opts?: { silent?: boolean }) => {
+      const list = toCheck ?? watches;
+      if (list.length === 0) return;
+      if (typeof navigator !== "undefined" && !navigator.onLine) {
+        showNotice("You're offline — watch checks will run next time you're online.", {
+          type: "error",
+        });
+        return;
+      }
+      setCheckingAll(true);
+      try {
+        const results = await checkWatches(list, { staggerMs: 400 });
+        const map: Record<string, WatchCheckResult> = {};
+        for (const r of results) map[`${r.owner}/${r.repo}`.toLowerCase()] = r;
+        setWatchResults((prev) => ({ ...prev, ...map }));
+        setWatches(await listWatches());
+
+        const changedRepos = results.filter((r) => r.status === "changes");
+        if (changedRepos.length > 0) {
+          const newReview: Record<string, ScannedItem[]> = {};
+          for (const r of changedRepos) {
+            const watch = list.find(
+              (w) => w.owner === r.owner && w.repo === r.repo
+            );
+            if (!watch) continue;
+            newReview[`${r.owner}/${r.repo}`.toLowerCase()] = await fetchReviewItems(watch, r);
+          }
+          setReviewItems((prev) => ({ ...prev, ...newReview }));
+          const firstKey = Object.keys(newReview)[0];
+          if (firstKey) setActiveReviewRepo(firstKey);
+
+          const total = changedRepos.reduce(
+            (n, r) => n + r.added.length + r.changed.length,
+            0
+          );
+          showNotice(
+            `${total} update${total === 1 ? "" : "s"} in ${changedRepos.length} watched repo${changedRepos.length === 1 ? "" : "s"}.`,
+            {
+              action: {
+                label: "Review",
+                run: async () => {
+                  setView("import");
+                },
+              },
+            }
+          );
+        } else if (!opts?.silent) {
+          showNotice("All watched repos are up to date.");
+        }
+      } catch (err) {
+        console.error(err);
+        showNotice("Failed to check watched repos.", { type: "error" });
+      } finally {
+        setCheckingAll(false);
+      }
+    },
+    [watches, showNotice]
+  );
+
+  const openReview = useCallback(
+    (watch: WatchedRepo) => {
+      const key = `${watch.owner}/${watch.repo}`.toLowerCase();
+      if (reviewItems[key]) {
+        setActiveReviewRepo(key);
+        setView("import");
+        return;
+      }
+      void (async () => {
+        try {
+          const result = await checkWatch(watch, {});
+          setWatchResults((prev) => ({ ...prev, [key]: result }));
+          setWatches(await listWatches());
+          if (result.status === "changes") {
+            const items = await fetchReviewItems(watch, result);
+            setReviewItems((prev) => ({ ...prev, [key]: items }));
+            setActiveReviewRepo(key);
+            setView("import");
+          } else if (result.status === "error") {
+            showNotice(result.error ?? "Failed to check this repo.", { type: "error" });
+          } else {
+            showNotice(`${watch.owner}/${watch.repo} is up to date.`);
+          }
+        } catch (err) {
+          console.error(err);
+          showNotice("Failed to check this repo.", { type: "error" });
+        }
+      })();
+    },
+    [reviewItems, showNotice]
+  );
+
+  const watchCurrentRepo = async () => {
+    if (!scannedRepo || !scannedRepo.owner) return;
+    try {
+      await saveWatch({ owner: scannedRepo.owner, repo: scannedRepo.repo, snapshot: {} });
+      const stored = await getWatch(scannedRepo.owner, scannedRepo.repo);
+      if (stored) {
+        const result = await checkWatch(stored, {});
+        setWatchResults((prev) => ({
+          ...prev,
+          [`${stored.owner}/${stored.repo}`.toLowerCase()]: result,
+        }));
+      }
+      setWatches(await listWatches());
+      showNotice(`Watching ${scannedRepo.owner}/${scannedRepo.repo} — updates appear here.`);
+    } catch (err) {
+      console.error(err);
+      showNotice("Failed to watch this repo.", { type: "error" });
+    }
+  };
+
+  const unwatchRepo = async (watch: WatchedRepo) => {
+    try {
+      await removeWatch(watch.owner, watch.repo);
+      setWatches(await listWatches());
+      const key = `${watch.owner}/${watch.repo}`.toLowerCase();
+      setReviewItems((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+      showNotice(`Stopped watching ${watch.owner}/${watch.repo}.`);
+    } catch {
+      showNotice("Failed to remove this watch.", { type: "error" });
+    }
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const loaded = await listWatches();
+        if (cancelled) return;
+        setWatches(loaded);
+        if (
+          loaded.length > 0 &&
+          !pollStartedRef.current &&
+          typeof navigator !== "undefined" &&
+          navigator.onLine
+        ) {
+          pollStartedRef.current = true;
+          void runCheckAll(loaded, { silent: true });
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleDeleteWithUndo = useCallback(
     async (item: PromptItem): Promise<boolean> => {
@@ -491,6 +711,15 @@ export default function Home() {
               })}
             </div>
           </div>
+
+          <WatchList
+            watches={watches}
+            results={watchResults}
+            checking={checkingAll}
+            onCheckAll={() => void runCheckAll()}
+            onOpenReview={(w) => openReview(w)}
+            onRemove={(w) => void unwatchRepo(w)}
+          />
         </nav>
 
         {/* Sidebar Footer */}
@@ -697,7 +926,21 @@ export default function Home() {
                   </div>
 
                   <div className="w-full max-w-4xl">
-                    {!scannedItems ? (
+                    {activeReviewRepo && reviewItems[activeReviewRepo] ? (
+                      (() => {
+                        const [owner, repo] = activeReviewRepo.split("/");
+                        return (
+                          <ImportSelector
+                            items={reviewItems[activeReviewRepo]}
+                            onImport={handleImport}
+                            onCancel={() => setActiveReviewRepo(null)}
+                            existingKeys={existingKeys}
+                            repo={{ owner, repo }}
+                            watched
+                          />
+                        );
+                      })()
+                    ) : !scannedItems ? (
                       <GitHubScanner onItemsScanned={handleItemsScanned} />
                     ) : (
                       <ImportSelector
@@ -705,6 +948,15 @@ export default function Home() {
                         onImport={handleImport}
                         onCancel={handleScanCancel}
                         existingKeys={existingKeys}
+                        repo={scannedRepo ?? undefined}
+                        watched={
+                          !!scannedRepo &&
+                          watches.some(
+                            (w) =>
+                              w.owner === scannedRepo.owner && w.repo === scannedRepo.repo
+                          )
+                        }
+                        onWatch={() => watchCurrentRepo()}
                       />
                     )}
                   </div>
