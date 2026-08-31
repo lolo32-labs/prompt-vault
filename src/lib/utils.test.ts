@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseTags, generateId, fmtBytes } from "./utils";
+import { parseTags, generateId, fmtBytes, resolveDependency } from "./utils";
 
 describe("parseTags", () => {
   it("splits on commas and trims whitespace", () => {
@@ -50,5 +50,33 @@ describe("fmtBytes", () => {
   it("handles invalid input", () => {
     expect(fmtBytes(-5)).toBe("0 B");
     expect(fmtBytes(NaN)).toBe("0 B");
+  });
+});
+
+describe("resolveDependency", () => {
+  const src =
+    "https://github.com/anthropics/skills/blob/main/skills/frontend-design/SKILL.md";
+
+  it("resolves ./ siblings against the source directory", () => {
+    expect(resolveDependency(src, "./assets/guide.md")).toBe(
+      "https://github.com/anthropics/skills/blob/main/skills/frontend-design/assets/guide.md"
+    );
+  });
+
+  it("resolves ../ parent traversals", () => {
+    expect(resolveDependency(src, "../shared/tokens.md")).toBe(
+      "https://github.com/anthropics/skills/blob/main/skills/shared/tokens.md"
+    );
+  });
+
+  it("passes through absolute URLs", () => {
+    expect(resolveDependency(src, "https://example.com/x.md")).toBe(
+      "https://example.com/x.md"
+    );
+  });
+
+  it("returns null for non-GitHub sources or missing source", () => {
+    expect(resolveDependency(undefined, "./x.md")).toBeNull();
+    expect(resolveDependency("https://example.com/readme", "./x.md")).toBeNull();
   });
 });

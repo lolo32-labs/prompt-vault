@@ -40,6 +40,44 @@ export function fmtBytes(bytes: number): string {
   return `${value >= 100 || unit === 0 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
 }
 
+export function downloadFile(filename: string, content: string, mime = "application/json"): void {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * Resolve a relative dependency link (from markdown like `[x](./foo.md)`)
+ * against a GitHub blob URL, producing an absolute link to the referenced
+ * file. Returns null when the source isn't a GitHub blob URL or the
+ * dependency is external.
+ */
+export function resolveDependency(
+  sourceUrl: string | undefined,
+  dep: string
+): string | null {
+  if (!sourceUrl) return null;
+  if (/^https?:\/\//i.test(dep)) return dep;
+  const match = sourceUrl.match(
+    /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/blob\/([^/]+)\/(.+)$/
+  );
+  if (!match) return null;
+  const [, owner, repo, branch, filePath] = match;
+  const stack = filePath.split("/").slice(0, -1);
+  for (const part of dep.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") stack.pop();
+    else stack.push(part);
+  }
+  return `https://github.com/${owner}/${repo}/blob/${branch}/${stack.join("/")}`;
+}
+
 export async function copyToClipboard(text: string): Promise<boolean> {
   try {
     if (navigator.clipboard?.writeText) {

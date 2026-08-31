@@ -15,6 +15,10 @@ export interface PromptItem {
   type: 'prompt' | 'skill';
   sourceUrl?: string;
   tags?: string[];
+  author?: string;
+  license?: string;
+  version?: string;
+  dependencies?: string[];
   metadata?: Record<string, unknown>;
   history?: PromptHistoryEntry[];
   createdAt: number;

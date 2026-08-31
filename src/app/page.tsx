@@ -7,6 +7,8 @@ import LibraryView from "@/components/LibraryView";
 import WatchList from "@/components/WatchList";
 import AgentBridge from "@/components/AgentBridge";
 import CommunityRegistry from "@/components/CommunityRegistry";
+import ExportBundleModal from "@/components/ExportBundleModal";
+import ImportPasswordModal from "@/components/ImportPasswordModal";
 import {
   ScannedItem,
   PromptItem,
@@ -33,11 +35,12 @@ import {
   saveBackupMeta,
   withPriorVersion,
 } from "@/lib/storage";
-import { generateId, parseTags, duplicateKey, formatFileDate, fmtBytes } from "@/lib/utils";
+import { generateId, parseTags, duplicateKey, formatFileDate, fmtBytes, downloadFile } from "@/lib/utils";
 import { useDebouncedValue, useFocusTrap, useStorageEstimate } from "@/lib/hooks";
 import { checkWatch, checkWatches } from "@/lib/watch";
 import { fetchRepoFiles, scanGitHubRepo, parseRepoUrl } from "@/lib/scanner";
 import { startBridge } from "@/lib/bridge";
+import { bundleCrypto, type EncryptedPayload } from "@/lib/crypto";
 import { shouldNudgeBackup } from "@/lib/backup";
 import {
   LayoutGrid,
@@ -111,6 +114,11 @@ export default function Home() {
   const [activeReviewRepo, setActiveReviewRepo] = useState<string | null>(null);
   const [bridgeSettings, setBridgeSettings] = useState<BridgeSettings>(DEFAULT_BRIDGE_SETTINGS);
   const [registryScanning, setRegistryScanning] = useState<string | null>(null);
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [pendingEncrypted, setPendingEncrypted] = useState<{
+    payload: EncryptedPayload;
+    fileName: string;
+  } | null>(null);
   const [backupMeta, setBackupMeta] = useState<BackupMeta>({});
   const storageUsage = useStorageEstimate();
   const searchRef = useRef<HTMLInputElement>(null);
@@ -273,6 +281,7 @@ export default function Home() {
                 ? item.sourceUrl
                 : undefined,
             description: item.description,
+            dependencies: item.dependencies?.length ? item.dependencies : undefined,
           });
           added++;
         }
@@ -581,29 +590,32 @@ export default function Home() {
     [loadPrompts, showNotice]
   );
 
-  const handleExport = async () => {
+  const buildBundleItems = () =>
+    prompts.map((p) => {
+      const { history: _ignored, ...rest } = p;
+      void _ignored;
+      return rest;
+    });
+
+  const recordExportMeta = async () => {
+    const meta: BackupMeta = {
+      ...backupMeta,
+      lastExportAt: Date.now(),
+      itemsAtExport: prompts.length,
+    };
+    await saveBackupMeta(meta);
+    setBackupMeta(meta);
+  };
+
+  const handleExportPlain = async () => {
     try {
       const bundle = {
         version: "1.1.0",
         exportedAt: new Date().toISOString(),
-        items: prompts,
+        items: buildBundleItems(),
       };
-      const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `prompt-vault-${formatFileDate(new Date())}.json`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      const meta: BackupMeta = {
-        ...backupMeta,
-        lastExportAt: Date.now(),
-        itemsAtExport: prompts.length,
-      };
-      await saveBackupMeta(meta);
-      setBackupMeta(meta);
+      downloadFile(`prompt-vault-${formatFileDate(new Date())}.json`, JSON.stringify(bundle, null, 2));
+      await recordExportMeta();
       showNotice(`Exported ${prompts.length} item${prompts.length === 1 ? "" : "s"}.`);
     } catch (err) {
       console.error(err);
@@ -611,47 +623,98 @@ export default function Home() {
     }
   };
 
+  const handleExportEncrypted = async (password: string) => {
+    try {
+      const container = {
+        format: "prompt-vault-encrypted",
+        version: 1,
+        createdAt: new Date().toISOString(),
+        payload: await bundleCrypto.encryptJson(
+          {
+            version: "1.1.0",
+            exportedAt: new Date().toISOString(),
+            items: buildBundleItems(),
+          },
+          password
+        ),
+      };
+      downloadFile(
+        `prompt-vault-${formatFileDate(new Date())}.pvault`,
+        JSON.stringify(container, null, 2)
+      );
+      await recordExportMeta();
+      showNotice(`Encrypted bundle exported (${prompts.length} item${prompts.length === 1 ? "" : "s"}).`);
+    } catch (err) {
+      console.error(err);
+      showNotice("Encrypted export failed.", { type: "error" });
+    }
+  };
+
+  const importBundleItems = async (parsed: unknown) => {
+    const rawItems = Array.isArray(parsed) ? parsed : (parsed as { items?: unknown })?.items;
+
+    if (!Array.isArray(rawItems)) {
+      throw new Error("Invalid bundle: expected an array of items.");
+    }
+
+    const valid = rawItems.filter(
+      (i): i is PromptItem =>
+        !!i &&
+        typeof i === "object" &&
+        typeof (i as PromptItem).id === "string" &&
+        typeof (i as PromptItem).name === "string" &&
+        typeof (i as PromptItem).content === "string"
+    );
+
+    const sanitized = valid.map((i) => ({
+      ...i,
+      tags: Array.isArray(i.tags) ? i.tags.filter((t) => typeof t === "string") : undefined,
+      dependencies: Array.isArray(i.dependencies)
+        ? i.dependencies.filter((d) => typeof d === "string")
+        : undefined,
+      author: typeof i.author === "string" ? i.author : undefined,
+      license: typeof i.license === "string" ? i.license : undefined,
+      version: typeof i.version === "string" ? i.version : undefined,
+      sourceUrl:
+        typeof i.sourceUrl === "string" && /^https?:\/\//i.test(i.sourceUrl)
+          ? i.sourceUrl
+          : undefined,
+      createdAt: typeof i.createdAt === "number" ? i.createdAt : Date.now(),
+    }));
+
+    const existing = await getAllPrompts();
+    const existingIds = new Set(existing.map((p) => p.id));
+    const added = sanitized.filter((i) => !existingIds.has(i.id)).length;
+    const updated = sanitized.length - added;
+
+    await savePrompts(sanitized);
+    await loadPrompts();
+    showNotice(
+      sanitized.length
+        ? `Bundle imported: ${added} added${updated > 0 ? `, ${updated} updated` : ""}.`
+        : "No valid items found in bundle."
+    );
+    warnIfStorageNearLimit();
+  };
+
   const handleImportJson = async (file: File) => {
     try {
       const text = await file.text();
-      const parsed = JSON.parse(text) as { items?: PromptItem[] } | PromptItem[];
-      const rawItems = Array.isArray(parsed) ? parsed : parsed.items;
-
-      if (!Array.isArray(rawItems)) {
-        throw new Error("Invalid bundle: expected an array of items.");
+      const parsed = JSON.parse(text) as Record<string, unknown>;
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        parsed.format === "prompt-vault-encrypted" &&
+        parsed.payload &&
+        typeof parsed.payload === "object"
+      ) {
+        setPendingEncrypted({
+          payload: parsed.payload as EncryptedPayload,
+          fileName: file.name,
+        });
+        return;
       }
-
-      const valid = rawItems.filter(
-        (i): i is PromptItem =>
-          !!i &&
-          typeof i.id === "string" &&
-          typeof i.name === "string" &&
-          typeof i.content === "string"
-      );
-
-      const sanitized = valid.map((i) => ({
-        ...i,
-        tags: Array.isArray(i.tags) ? i.tags.filter((t) => typeof t === "string") : undefined,
-        sourceUrl:
-          typeof i.sourceUrl === "string" && /^https?:\/\//i.test(i.sourceUrl)
-            ? i.sourceUrl
-            : undefined,
-        createdAt: typeof i.createdAt === "number" ? i.createdAt : Date.now(),
-      }));
-
-      const existing = await getAllPrompts();
-      const existingIds = new Set(existing.map((p) => p.id));
-      const added = sanitized.filter((i) => !existingIds.has(i.id)).length;
-      const updated = sanitized.length - added;
-
-      await savePrompts(sanitized);
-      await loadPrompts();
-      showNotice(
-        sanitized.length
-          ? `Bundle imported: ${added} added${updated > 0 ? `, ${updated} updated` : ""}.`
-          : "No valid items found in bundle."
-      );
-      warnIfStorageNearLimit();
+      await importBundleItems(parsed);
     } catch (err) {
       console.error(err);
       showNotice(
@@ -659,6 +722,13 @@ export default function Home() {
         { type: "error" }
       );
     }
+  };
+
+  const unlockEncryptedBundle = async (password: string) => {
+    if (!pendingEncrypted) return;
+    const bundle = await bundleCrypto.decryptJson<unknown>(pendingEncrypted.payload, password);
+    await importBundleItems(bundle);
+    setPendingEncrypted(null);
   };
 
   const debouncedQuery = useDebouncedValue(searchQuery, 200);
@@ -893,7 +963,7 @@ export default function Home() {
 
           <div className={`flex gap-2 ${!sidebarOpen ? "lg:hidden" : ""}`}>
             <button
-              onClick={handleExport}
+              onClick={() => setShowExportModal(true)}
               disabled={prompts.length === 0}
               className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-surface-900/60 border border-surface-800/50 text-xs font-medium text-surface-300 hover:text-surface-100 hover:bg-surface-800/60 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
               title="Export as JSON bundle"
@@ -1000,7 +1070,7 @@ export default function Home() {
                         never lose it.
                       </p>
                       <button
-                        onClick={() => void handleExport()}
+                        onClick={() => void handleExportPlain()}
                         className="shrink-0 px-3 py-1.5 rounded-lg bg-amber-500/20 border border-amber-500/30 text-xs font-semibold text-amber-300 hover:bg-amber-500/30 transition-colors"
                       >
                         Export backup
@@ -1240,6 +1310,29 @@ export default function Home() {
           <CreatePromptModal
             onSubmit={handleCreatePrompt}
             onClose={() => setShowCreateModal(false)}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* ─── Bundle Export Modal ──────────────────── */}
+      <AnimatePresence>
+        {showExportModal && (
+          <ExportBundleModal
+            itemCount={prompts.length}
+            onClose={() => setShowExportModal(false)}
+            onExportPlain={handleExportPlain}
+            onExportEncrypted={handleExportEncrypted}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* ─── Encrypted Bundle Unlock Modal ────────── */}
+      <AnimatePresence>
+        {pendingEncrypted && (
+          <ImportPasswordModal
+            fileName={pendingEncrypted.fileName}
+            onClose={() => setPendingEncrypted(null)}
+            onUnlock={unlockEncryptedBundle}
           />
         )}
       </AnimatePresence>

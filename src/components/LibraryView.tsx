@@ -32,7 +32,7 @@ import {
 import { motion, AnimatePresence } from "framer-motion";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { atomDark } from "react-syntax-highlighter/dist/esm/styles/prism";
-import { cn, copyToClipboard } from "@/lib/utils";
+import { cn, copyToClipboard, resolveDependency } from "@/lib/utils";
 import { useFocusTrap } from "@/lib/hooks";
 import MarkdownPreview from "./MarkdownPreview";
 import DiffView from "./DiffView";
@@ -557,6 +557,25 @@ export default function LibraryView({
                         {selectedPrompt.description}
                       </p>
                     )}
+                    {(selectedPrompt.author || selectedPrompt.license || selectedPrompt.version) && (
+                      <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                        {selectedPrompt.author && (
+                          <span className="px-1.5 py-0.5 bg-surface-800/60 rounded text-[9px] text-surface-400 font-medium">
+                            by {selectedPrompt.author}
+                          </span>
+                        )}
+                        {selectedPrompt.license && (
+                          <span className="px-1.5 py-0.5 bg-surface-800/60 rounded text-[9px] text-surface-400 font-medium">
+                            {selectedPrompt.license}
+                          </span>
+                        )}
+                        {selectedPrompt.version && (
+                          <span className="px-1.5 py-0.5 bg-surface-800/60 rounded text-[9px] text-surface-500 font-mono">
+                            v{selectedPrompt.version}
+                          </span>
+                        )}
+                      </div>
+                    )}
                     <div className="flex items-center gap-3 mt-0.5">
                       <span className="text-[10px] text-surface-500 flex items-center gap-1">
                         <Clock className="h-3 w-3" />
@@ -760,6 +779,36 @@ export default function LibraryView({
                               {t}
                             </button>
                           ))}
+                        </div>
+                      )}
+
+                      {selectedPrompt.dependencies && selectedPrompt.dependencies.length > 0 && (
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="text-[10px] font-semibold text-surface-600 uppercase tracking-wider">
+                            Dependencies
+                          </span>
+                          {selectedPrompt.dependencies.map((dep) => {
+                            const url = resolveDependency(selectedPrompt.sourceUrl, dep);
+                            return url ? (
+                              <a
+                                key={dep}
+                                href={url}
+                                target="_blank"
+                                rel="noreferrer"
+                                title="Open on GitHub"
+                                className="px-2 py-0.5 max-w-[12rem] truncate bg-surface-900/60 border border-surface-800/50 rounded-md text-[10px] text-accent-400 font-mono hover:border-accent-500/40 transition-colors"
+                              >
+                                {dep}
+                              </a>
+                            ) : (
+                              <span
+                                key={dep}
+                                className="px-2 py-0.5 max-w-[12rem] truncate bg-surface-900/60 border border-surface-800/50 rounded-md text-[10px] text-surface-500 font-mono"
+                              >
+                                {dep}
+                              </span>
+                            );
+                          })}
                         </div>
                       )}
 
