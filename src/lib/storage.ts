@@ -1,5 +1,5 @@
 import { get, set, del, keys } from 'idb-keyval';
-import { PromptItem, WatchedRepo } from '@/types';
+import { PromptItem, WatchedRepo, BridgeSettings } from '@/types';
 
 export async function savePrompt(prompt: PromptItem): Promise<void> {
   await set(prompt.id, prompt);
@@ -52,4 +52,43 @@ export async function saveWatch(watch: WatchedRepo): Promise<void> {
 
 export async function removeWatch(owner: string, repo: string): Promise<void> {
   await del(watchKey(owner, repo));
+}
+
+/* ─── Agent Bridge settings ─────────────── */
+
+const BRIDGE_KEY = 'bridge:settings';
+
+export const DEFAULT_BRIDGE_SETTINGS: BridgeSettings = {
+  version: 1,
+  bridgeEnabled: false,
+  allowedOrigins: [],
+  permissions: { list: false, get: false },
+};
+
+export async function getPromptById(id: string): Promise<PromptItem | undefined> {
+  const p = await get<PromptItem>(id);
+  if (p && typeof p.id === 'string' && typeof p.name === 'string') return p;
+  return undefined;
+}
+
+export async function getBridgeSettings(): Promise<BridgeSettings> {
+  const s = await get<Partial<BridgeSettings>>(BRIDGE_KEY);
+  if (!s || typeof s !== 'object') {
+    return { ...DEFAULT_BRIDGE_SETTINGS, permissions: { ...DEFAULT_BRIDGE_SETTINGS.permissions } };
+  }
+  return {
+    version: 1,
+    bridgeEnabled: !!s.bridgeEnabled,
+    allowedOrigins: Array.isArray(s.allowedOrigins)
+      ? s.allowedOrigins.filter((o): o is string => typeof o === 'string')
+      : [],
+    permissions: {
+      list: !!s.permissions?.list,
+      get: !!s.permissions?.get,
+    },
+  };
+}
+
+export async function saveBridgeSettings(settings: BridgeSettings): Promise<void> {
+  await set(BRIDGE_KEY, settings);
 }

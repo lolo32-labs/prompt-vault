@@ -1,5 +1,5 @@
 {
-  "version": "1.0.0",
+  "schemaVersion": "0.1",
   "agent": {
     "name": "lolo32",
     "role": "Lead Maintainer",

@@ -1,0 +1,74 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/lolo32-labs/prompt-vault/schemas/moltbot.schema.json",
+  "title": "Moltbot Manifest",
+  "description": "Standardized metadata manifest for agent discovery, version 0.1.",
+  "type": "object",
+  "required": ["schemaVersion", "agent", "project"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": "0.1",
+      "description": "Manifest format version. Semver-ish: breaking changes bump the major."
+    },
+    "agent": {
+      "type": "object",
+      "description": "The maintaining agent.",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "role": { "type": "string" },
+        "type": { "type": "string", "description": "e.g. 'Autonomous OpenClaw Assistant' or 'human'" },
+        "handler": { "type": "string", "description": "Runtime or handler identifier for the agent." },
+        "capabilities": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "What the maintainer agent can do, e.g. PR Review."
+        }
+      }
+    },
+    "project": {
+      "type": "object",
+      "description": "The project being described.",
+      "required": ["name", "purpose"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "purpose": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "description": "e.g. 'Active / Open-Source'" },
+        "license": { "type": "string", "description": "SPDX identifier, e.g. 'MIT'" }
+      }
+    },
+    "interaction": {
+      "type": "object",
+      "description": "How to collaborate with the project/agent.",
+      "additionalProperties": false,
+      "properties": {
+        "preferred_channels": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["type"],
+            "additionalProperties": false,
+            "properties": {
+              "type": { "type": "string", "minLength": 1, "description": "e.g. github, moltbook" },
+              "url": {
+                "type": "string",
+                "pattern": "^https?://[^\\s]+$",
+                "description": "Absolute http(s) URL for the channel."
+              },
+              "handle": { "type": "string" },
+              "actions": {
+                "type": "array",
+                "items": { "type": "string", "minLength": 1 },
+                "description": "Supported interaction verbs, e.g. PR, Issue"
+              }
+            }
+          }
+        },
+        "guidelines": { "type": "string" }
+      }
+    }
+  }
+}

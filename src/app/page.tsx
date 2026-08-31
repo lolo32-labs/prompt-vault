@@ -5,7 +5,14 @@ import GitHubScanner from "@/components/GitHubScanner";
 import ImportSelector from "@/components/ImportSelector";
 import LibraryView from "@/components/LibraryView";
 import WatchList from "@/components/WatchList";
-import { ScannedItem, PromptItem, WatchedRepo, WatchCheckResult } from "@/types";
+import AgentBridge from "@/components/AgentBridge";
+import {
+  ScannedItem,
+  PromptItem,
+  WatchedRepo,
+  WatchCheckResult,
+  BridgeSettings,
+} from "@/types";
 import {
   getAllPrompts,
   savePrompt,
@@ -16,11 +23,16 @@ import {
   saveWatch,
   removeWatch,
   getWatch,
+  getPromptById,
+  getBridgeSettings,
+  saveBridgeSettings,
+  DEFAULT_BRIDGE_SETTINGS,
 } from "@/lib/storage";
 import { generateId, parseTags, duplicateKey, formatFileDate } from "@/lib/utils";
 import { useDebouncedValue, useFocusTrap } from "@/lib/hooks";
 import { checkWatch, checkWatches } from "@/lib/watch";
 import { fetchRepoFiles } from "@/lib/scanner";
+import { startBridge } from "@/lib/bridge";
 import {
   LayoutGrid,
   Plus,
@@ -90,6 +102,7 @@ export default function Home() {
   const [checkingAll, setCheckingAll] = useState(false);
   const [reviewItems, setReviewItems] = useState<Record<string, ScannedItem[]>>({});
   const [activeReviewRepo, setActiveReviewRepo] = useState<string | null>(null);
+  const [bridgeSettings, setBridgeSettings] = useState<BridgeSettings>(DEFAULT_BRIDGE_SETTINGS);
   const searchRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pollStartedRef = useRef(false);
@@ -454,6 +467,47 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    getBridgeSettings()
+      .then((s) => {
+        if (!cancelled) setBridgeSettings(s);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!bridgeSettings.bridgeEnabled) return;
+    const stop = startBridge({
+      getSettings: () => bridgeSettings,
+      listItems: async () =>
+        (await getAllPrompts()).map((p) => ({
+          id: p.id,
+          name: p.name,
+          description: p.description,
+          type: p.type,
+          tags: p.tags,
+          createdAt: p.createdAt,
+          sourceUrl: p.sourceUrl,
+        })),
+      getItem: async (id) => (await getPromptById(id)) ?? null,
+    });
+    return stop;
+  }, [bridgeSettings]);
+
+  const updateBridgeSettings = async (next: BridgeSettings) => {
+    try {
+      await saveBridgeSettings(next);
+      setBridgeSettings(next);
+    } catch (err) {
+      console.error(err);
+      showNotice("Failed to save bridge settings.", { type: "error" });
+    }
+  };
+
   const handleDeleteWithUndo = useCallback(
     async (item: PromptItem): Promise<boolean> => {
       try {
@@ -720,6 +774,8 @@ export default function Home() {
             onOpenReview={(w) => openReview(w)}
             onRemove={(w) => void unwatchRepo(w)}
           />
+
+          <AgentBridge settings={bridgeSettings} onChange={updateBridgeSettings} />
         </nav>
 
         {/* Sidebar Footer */}

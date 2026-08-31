@@ -43,3 +43,13 @@ export interface WatchCheckResult {
   removed: string[];
   error?: string;
 }
+
+export interface BridgeSettings {
+  version: 1;
+  bridgeEnabled: boolean;
+  allowedOrigins: string[];
+  permissions: {
+    list: boolean;
+    get: boolean;
+  };
+}
