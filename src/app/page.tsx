@@ -12,6 +12,7 @@ import {
   WatchedRepo,
   WatchCheckResult,
   BridgeSettings,
+  BackupMeta,
 } from "@/types";
 import {
   getAllPrompts,
@@ -27,12 +28,16 @@ import {
   getBridgeSettings,
   saveBridgeSettings,
   DEFAULT_BRIDGE_SETTINGS,
+  getBackupMeta,
+  saveBackupMeta,
+  withPriorVersion,
 } from "@/lib/storage";
-import { generateId, parseTags, duplicateKey, formatFileDate } from "@/lib/utils";
-import { useDebouncedValue, useFocusTrap } from "@/lib/hooks";
+import { generateId, parseTags, duplicateKey, formatFileDate, fmtBytes } from "@/lib/utils";
+import { useDebouncedValue, useFocusTrap, useStorageEstimate } from "@/lib/hooks";
 import { checkWatch, checkWatches } from "@/lib/watch";
 import { fetchRepoFiles } from "@/lib/scanner";
 import { startBridge } from "@/lib/bridge";
+import { shouldNudgeBackup } from "@/lib/backup";
 import {
   LayoutGrid,
   Plus,
@@ -54,6 +59,7 @@ import {
   CheckCircle2,
   AlertCircle,
   ArrowUpDown,
+  AlertTriangle,
 } from "lucide-react";
 import { motion, AnimatePresence, MotionConfig } from "framer-motion";
 
@@ -61,7 +67,7 @@ type SortKey = "newest" | "oldest" | "name";
 
 interface Notice {
   message: string;
-  type: "success" | "error";
+  type: "success" | "error" | "warn";
   action?: { label: string; run: () => void | Promise<void> };
 }
 
@@ -103,6 +109,8 @@ export default function Home() {
   const [reviewItems, setReviewItems] = useState<Record<string, ScannedItem[]>>({});
   const [activeReviewRepo, setActiveReviewRepo] = useState<string | null>(null);
   const [bridgeSettings, setBridgeSettings] = useState<BridgeSettings>(DEFAULT_BRIDGE_SETTINGS);
+  const [backupMeta, setBackupMeta] = useState<BackupMeta>({});
+  const storageUsage = useStorageEstimate();
   const searchRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pollStartedRef = useRef(false);
@@ -217,12 +225,17 @@ export default function Home() {
         const match = byKey.get(duplicateKey(item.type, item.name));
         if (match) {
           if (options?.replaceDuplicates) {
-            toSave.push({
-              ...match,
-              content: item.content,
-              sourceUrl: item.sourceUrl ?? match.sourceUrl,
-              description: item.description ?? match.description,
-            });
+            toSave.push(
+              withPriorVersion(
+                {
+                  ...match,
+                  content: item.content,
+                  sourceUrl: item.sourceUrl ?? match.sourceUrl,
+                  description: item.description ?? match.description,
+                },
+                match
+              )
+            );
             updated++;
           }
         } else {
@@ -264,6 +277,7 @@ export default function Home() {
       if (updated) parts.push(`${updated} updated`);
       if (skipped) parts.push(`${skipped} duplicate${skipped === 1 ? "" : "s"} skipped`);
       showNotice(parts.length ? `Import complete: ${parts.join(", ")}.` : "Nothing to import.");
+      warnIfStorageNearLimit();
     } catch (err) {
       console.error(err);
       showNotice(
@@ -298,6 +312,7 @@ export default function Home() {
     setShowCreateModal(false);
     await loadPrompts();
     showNotice("Prompt created.");
+    warnIfStorageNearLimit();
     return true;
   };
 
@@ -474,6 +489,11 @@ export default function Home() {
         if (!cancelled) setBridgeSettings(s);
       })
       .catch(() => {});
+    getBackupMeta()
+      .then((m) => {
+        if (!cancelled) setBackupMeta(m);
+      })
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
@@ -538,7 +558,7 @@ export default function Home() {
     [loadPrompts, showNotice]
   );
 
-  const handleExport = () => {
+  const handleExport = async () => {
     try {
       const bundle = {
         version: "1.1.0",
@@ -554,6 +574,13 @@ export default function Home() {
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
+      const meta: BackupMeta = {
+        ...backupMeta,
+        lastExportAt: Date.now(),
+        itemsAtExport: prompts.length,
+      };
+      await saveBackupMeta(meta);
+      setBackupMeta(meta);
       showNotice(`Exported ${prompts.length} item${prompts.length === 1 ? "" : "s"}.`);
     } catch (err) {
       console.error(err);
@@ -601,6 +628,7 @@ export default function Home() {
           ? `Bundle imported: ${added} added${updated > 0 ? `, ${updated} updated` : ""}.`
           : "No valid items found in bundle."
       );
+      warnIfStorageNearLimit();
     } catch (err) {
       console.error(err);
       showNotice(
@@ -646,6 +674,30 @@ export default function Home() {
   const promptCount = prompts.filter((p) => p.type === "prompt").length;
   const filtersActive = debouncedQuery.trim() !== "" || activeCategory !== "all";
   const existingKeys = useMemoExistingKeys(prompts);
+
+  const storageNearLimit =
+    !!storageUsage && storageUsage.quota > 0 && storageUsage.usage / storageUsage.quota > 0.8;
+
+  const warnIfStorageNearLimit = () => {
+    if (!storageNearLimit || !storageUsage) return;
+    const pct = Math.round((storageUsage.usage / storageUsage.quota) * 100);
+    showNotice(
+      `Saved — but browser storage is ${pct}% full. Consider exporting a backup.`,
+      { type: "warn" }
+    );
+  };
+
+  const showBackupNudge = shouldNudgeBackup(backupMeta, prompts.length);
+
+  const dismissBackupNudge = async () => {
+    const meta = { ...backupMeta, lastDismissedAt: Date.now() };
+    try {
+      await saveBackupMeta(meta);
+      setBackupMeta(meta);
+    } catch (err) {
+      console.error(err);
+    }
+  };
 
   const clearFilters = () => {
     setSearchQuery("");
@@ -780,6 +832,27 @@ export default function Home() {
 
         {/* Sidebar Footer */}
         <div className="p-4 border-t border-surface-800/50 space-y-3">
+          {storageUsage && storageUsage.quota > 0 && (
+            <div className={`${!sidebarOpen ? "lg:hidden" : ""} space-y-1.5`}>
+              <div className="flex justify-between text-[10px] text-surface-600">
+                <span>Browser storage</span>
+                <span className={storageNearLimit ? "text-amber-400 font-semibold" : ""}>
+                  {fmtBytes(storageUsage.usage)} / {fmtBytes(storageUsage.quota)}
+                </span>
+              </div>
+              <div className="h-1 rounded-full bg-surface-800 overflow-hidden">
+                <div
+                  className={`h-full rounded-full ${storageNearLimit ? "bg-amber-500" : "bg-accent-500"}`}
+                  style={{
+                    width: `${Math.min(
+                      100,
+                      Math.round((storageUsage.usage / storageUsage.quota) * 100)
+                    )}%`,
+                  }}
+                />
+              </div>
+            </div>
+          )}
           <button
             onClick={() => setShowCreateModal(true)}
             className="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-surface-900/60 border border-surface-800/50 hover:bg-surface-800/60 hover:border-surface-700/50 transition-all group"
@@ -892,6 +965,33 @@ export default function Home() {
                   transition={{ duration: 0.25, ease: "easeOut" }}
                   className="space-y-8"
                 >
+                  {showBackupNudge && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -8 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="flex items-center gap-3 px-4 py-3 rounded-xl bg-amber-500/10 border border-amber-500/25"
+                    >
+                      <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0" />
+                      <p className="text-xs text-amber-200 flex-1">
+                        Your vault lives only in this browser. Export a backup so you
+                        never lose it.
+                      </p>
+                      <button
+                        onClick={() => void handleExport()}
+                        className="shrink-0 px-3 py-1.5 rounded-lg bg-amber-500/20 border border-amber-500/30 text-xs font-semibold text-amber-300 hover:bg-amber-500/30 transition-colors"
+                      >
+                        Export backup
+                      </button>
+                      <button
+                        onClick={() => void dismissBackupNudge()}
+                        aria-label="Dismiss backup reminder"
+                        className="shrink-0 p-1 text-amber-400/70 hover:text-amber-200 transition-colors"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </motion.div>
+                  )}
+
                   {/* Library Header */}
                   <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4 pb-6 border-b border-surface-800/30">
                     <div>
@@ -1065,11 +1165,17 @@ export default function Home() {
             exit={{ opacity: 0, y: 16 }}
             role="status"
             className={`fixed bottom-6 right-6 z-[70] flex items-center gap-3 max-w-md pl-4 pr-2 py-3 rounded-xl glass shadow-2xl ${
-              notice.type === "error" ? "border border-rose-500/40" : "border border-accent-500/30"
+              notice.type === "error"
+                ? "border border-rose-500/40"
+                : notice.type === "warn"
+                  ? "border border-amber-500/40"
+                  : "border border-accent-500/30"
             }`}
           >
             {notice.type === "error" ? (
               <AlertCircle className="h-4 w-4 text-rose-400 shrink-0" />
+            ) : notice.type === "warn" ? (
+              <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0" />
             ) : (
               <CheckCircle2 className="h-4 w-4 text-accent-400 shrink-0" />
             )}

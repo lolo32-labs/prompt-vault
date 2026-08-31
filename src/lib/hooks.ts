@@ -14,8 +14,7 @@ export function useDebouncedValue<T>(value: T, delay = 200): T {
 const FOCUSABLE =
   'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
-export function useFocusTrap<T extends HTMLElement>(active: boolean, onClose: () => void) {
-  const ref = useRef<T>(null);
+export function useFocusTrap<T extends HTMLElement>(active: boolean, onClose: () => void) {  const ref = useRef<T>(null);
   const onCloseRef = useRef(onClose);
 
   useEffect(() => {
@@ -62,4 +61,31 @@ export function useFocusTrap<T extends HTMLElement>(active: boolean, onClose: ()
   }, [active]);
 
   return ref;
+}
+
+export interface StorageEstimateInfo {
+  usage: number;
+  quota: number;
+}
+
+export function useStorageEstimate(): StorageEstimateInfo | null {
+  const [estimate, setEstimate] = useState<StorageEstimateInfo | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (typeof navigator === "undefined" || !navigator.storage?.estimate) return;
+    navigator.storage
+      .estimate()
+      .then((e) => {
+        if (!cancelled && typeof e.usage === "number" && typeof e.quota === "number") {
+          setEstimate({ usage: e.usage, quota: e.quota });
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return estimate;
 }

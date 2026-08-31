@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useMemo, useCallback, useDeferredValue } from "react";
-import { PromptItem } from "@/types";
+import { PromptItem, PromptHistoryEntry } from "@/types";
 import {
   Copy,
   Trash2,
@@ -25,6 +25,9 @@ import {
   SearchX,
   RefreshCw,
   XCircle,
+  History,
+  RotateCcw,
+  ArrowLeft,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
@@ -32,6 +35,7 @@ import { atomDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { cn, copyToClipboard } from "@/lib/utils";
 import { useFocusTrap } from "@/lib/hooks";
 import MarkdownPreview from "./MarkdownPreview";
+import DiffView from "./DiffView";
 
 interface LibraryViewProps {
   prompts: PromptItem[];
@@ -70,6 +74,8 @@ export default function LibraryView({
   const [draftTagsText, setDraftTagsText] = useState("");
   const [editError, setEditError] = useState<string | null>(null);
   const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [viewingVersion, setViewingVersion] = useState<number | null>(null);
 
   const openPrompt = (prompt: PromptItem) => {
     setSelectedPrompt(prompt);
@@ -78,6 +84,8 @@ export default function LibraryView({
     setDraftTagsText("");
     setEditError(null);
     setDiscardConfirmOpen(false);
+    setShowHistory(false);
+    setViewingVersion(null);
   };
 
   const variables = useMemo(() => {
@@ -163,7 +171,29 @@ export default function LibraryView({
     setDraft({ ...selectedPrompt, tags: [...(selectedPrompt.tags ?? [])] });
     setDraftTagsText((selectedPrompt.tags ?? []).join(", "));
     setEditError(null);
+    setShowHistory(false);
+    setViewingVersion(null);
     setIsEditing(true);
+  };
+
+  const restoreVersion = async (entry: PromptHistoryEntry) => {
+    if (!selectedPrompt || !onEdit) return;
+    setEditError(null);
+    const restored: PromptItem = {
+      ...selectedPrompt,
+      name: entry.name,
+      description: entry.description,
+      content: entry.content,
+      type: entry.type,
+      tags: entry.tags,
+    };
+    const ok = await onEdit(restored);
+    if (!ok) {
+      setEditError("Couldn't restore this version. Please try again.");
+      return;
+    }
+    setSelectedPrompt(restored);
+    setViewingVersion(null);
   };
 
   const saveDraft = async () => {
@@ -692,6 +722,105 @@ export default function LibraryView({
                         </div>
                       )}
 
+                      {selectedPrompt.history && selectedPrompt.history.length > 0 && (
+                        <div className="flex items-center gap-1 border-b border-surface-800/40">
+                          <button
+                            onClick={() => {
+                              setShowHistory(false);
+                              setViewingVersion(null);
+                            }}
+                            className={cn(
+                              "px-3 py-2 text-xs font-medium border-b-2 -mb-px transition-colors",
+                              !showHistory
+                                ? "border-accent-500 text-accent-400"
+                                : "border-transparent text-surface-500 hover:text-surface-300"
+                            )}
+                          >
+                            Preview
+                          </button>
+                          <button
+                            onClick={() => setShowHistory(true)}
+                            className={cn(
+                              "px-3 py-2 text-xs font-medium border-b-2 -mb-px transition-colors inline-flex items-center gap-1.5",
+                              showHistory
+                                ? "border-accent-500 text-accent-400"
+                                : "border-transparent text-surface-500 hover:text-surface-300"
+                            )}
+                          >
+                            <History className="h-3 w-3" />
+                            History ({selectedPrompt.history.length})
+                          </button>
+                        </div>
+                      )}
+
+                      {showHistory && selectedPrompt.history ? (
+                        <div className="space-y-4">
+                          {editError && (
+                            <div className="px-4 py-3 rounded-xl bg-rose-500/10 border border-rose-500/25 text-xs text-rose-300">
+                              {editError}
+                            </div>
+                          )}
+                          {viewingVersion !== null && selectedPrompt.history[viewingVersion] ? (
+                            (() => {
+                              const entry = selectedPrompt.history![viewingVersion];
+                              return (
+                                <div className="space-y-3">
+                                  <div className="flex items-center justify-between gap-3">
+                                    <button
+                                      onClick={() => setViewingVersion(null)}
+                                      className="inline-flex items-center gap-1.5 text-xs text-surface-400 hover:text-surface-100 transition-colors"
+                                    >
+                                      <ArrowLeft className="h-3.5 w-3.5" />
+                                      All versions
+                                    </button>
+                                    <button
+                                      onClick={() => void restoreVersion(entry)}
+                                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent-500/10 border border-accent-500/25 text-xs font-semibold text-accent-400 hover:bg-accent-500/20 transition-colors"
+                                    >
+                                      <RotateCcw className="h-3 w-3" />
+                                      Restore
+                                    </button>
+                                  </div>
+                                  <p className="text-[11px] text-surface-500">
+                                    Version from {new Date(entry.savedAt).toLocaleString()} —{" "}
+                                    <span className="text-surface-300 font-medium">{entry.name}</span>
+                                  </p>
+                                  <DiffView
+                                    oldText={entry.content}
+                                    newText={selectedPrompt.content}
+                                  />
+                                </div>
+                              );
+                            })()
+                          ) : (
+                            <div className="space-y-2">
+                              {selectedPrompt.history.map((entry, idx) => (
+                                <button
+                                  key={`${entry.savedAt}-${idx}`}
+                                  onClick={() => setViewingVersion(idx)}
+                                  className="w-full text-left flex items-start gap-3 px-4 py-3 rounded-xl bg-surface-900/60 border border-surface-800/50 hover:border-surface-700/60 transition-all"
+                                >
+                                  <Clock className="h-3.5 w-3.5 text-surface-600 mt-0.5 shrink-0" />
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-center justify-between gap-2">
+                                      <span className="text-xs font-semibold text-surface-200 truncate">
+                                        {entry.name}
+                                      </span>
+                                      <span className="text-[10px] text-surface-600 shrink-0">
+                                        {new Date(entry.savedAt).toLocaleString()}
+                                      </span>
+                                    </div>
+                                    <p className="text-[11px] text-surface-500 font-mono line-clamp-1 mt-0.5 break-words">
+                                      {entry.content}
+                                    </p>
+                                  </div>
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <>
                       {/* Playground Section */}
                       {variables.length > 0 && (
                         <div className="space-y-4">
@@ -781,6 +910,8 @@ export default function LibraryView({
                             </p>
                           </div>
                         </div>
+                      )}
+                        </>
                       )}
                     </>
                   )}

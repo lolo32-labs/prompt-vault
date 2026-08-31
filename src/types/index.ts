@@ -1,3 +1,12 @@
+export interface PromptHistoryEntry {
+  name: string;
+  description?: string;
+  content: string;
+  type: 'prompt' | 'skill';
+  tags?: string[];
+  savedAt: number;
+}
+
 export interface PromptItem {
   id: string;
   name: string;
@@ -7,7 +16,14 @@ export interface PromptItem {
   sourceUrl?: string;
   tags?: string[];
   metadata?: Record<string, unknown>;
+  history?: PromptHistoryEntry[];
   createdAt: number;
+}
+
+export interface BackupMeta {
+  lastExportAt?: number;
+  itemsAtExport?: number;
+  lastDismissedAt?: number;
 }
 
 export interface ScannedItem {

@@ -1,5 +1,41 @@
 import { get, set, del, keys } from 'idb-keyval';
-import { PromptItem, WatchedRepo, BridgeSettings } from '@/types';
+import { PromptItem, PromptHistoryEntry, WatchedRepo, BridgeSettings, BackupMeta } from '@/types';
+
+/** Maximum number of prior versions kept per item. */
+export const HISTORY_LIMIT = 20;
+
+function semanticSnapshot(item: PromptItem): Omit<PromptHistoryEntry, 'savedAt'> {
+  return {
+    name: item.name,
+    description: item.description,
+    content: item.content,
+    type: item.type,
+    tags: item.tags,
+  };
+}
+
+function snapshotsEqual(a: Omit<PromptHistoryEntry, 'savedAt'>, b: Omit<PromptHistoryEntry, 'savedAt'>): boolean {
+  return (
+    a.name === b.name &&
+    a.description === b.description &&
+    a.content === b.content &&
+    a.type === b.type &&
+    JSON.stringify(a.tags ?? []) === JSON.stringify(b.tags ?? [])
+  );
+}
+
+/**
+ * Pure helper: return `item` with `previous` pushed onto its bounded history
+ * ring. Skips the push when nothing semantic changed. Callers persist the
+ * result themselves.
+ */
+export function withPriorVersion(item: PromptItem, previous: PromptItem): PromptItem {
+  const prevSnapshot = semanticSnapshot(previous);
+  const nextSnapshot = semanticSnapshot(item);
+  if (snapshotsEqual(prevSnapshot, nextSnapshot)) return item;
+  const entry: PromptHistoryEntry = { ...prevSnapshot, savedAt: Date.now() };
+  return { ...item, history: [entry, ...(previous.history ?? [])].slice(0, HISTORY_LIMIT) };
+}
 
 export async function savePrompt(prompt: PromptItem): Promise<void> {
   await set(prompt.id, prompt);
@@ -10,7 +46,9 @@ export async function savePrompts(prompts: PromptItem[]): Promise<void> {
 }
 
 export async function updatePrompt(prompt: PromptItem): Promise<void> {
-  await set(prompt.id, prompt);
+  const current = await get<PromptItem>(prompt.id);
+  const withHistory = current ? withPriorVersion(prompt, current) : prompt;
+  await set(prompt.id, withHistory);
 }
 
 export async function getAllPrompts(): Promise<PromptItem[]> {
@@ -91,4 +129,17 @@ export async function getBridgeSettings(): Promise<BridgeSettings> {
 
 export async function saveBridgeSettings(settings: BridgeSettings): Promise<void> {
   await set(BRIDGE_KEY, settings);
+}
+
+/* ─── Backup meta ───────────────────────── */
+
+const BACKUP_KEY = 'meta:backup';
+
+export async function getBackupMeta(): Promise<BackupMeta> {
+  const m = await get<BackupMeta>(BACKUP_KEY);
+  return m && typeof m === 'object' ? m : {};
+}
+
+export async function saveBackupMeta(meta: BackupMeta): Promise<void> {
+  await set(BACKUP_KEY, meta);
 }
