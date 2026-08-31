@@ -59,14 +59,12 @@ Our goal is to transform Prompt Vault from a personal tool into an **Agent-to-Ag
 
 ---
 
-## 📍 Milestone 4: Encrypted Bundles (Q2 2027)
+## 📍 Milestone 4: Encrypted Bundles (Q2 2027) — ✅ Complete (shipped ahead of plan, Aug 2026)
 
 *Goal: let creators share premium skills without trusting a platform.*
 
-- [ ] **Encrypted Skill Bundles** — password-protected exports via WebCrypto (`AES-GCM` + `PBKDF2`), entirely client-side. Recipients unlock with the password; no keys, no accounts, no server.
-  *Done when:* an encrypted bundle can't be read without the password, and an unlocked bundle imports through the existing JSON flow.
-- [ ] **Creator fields in bundle spec** — optional `author`, `license`, and `version` per item so shared bundles carry attribution.
-  *Done when:* fields round-trip through export/import and display on imported items.
+- [x] **Encrypted Skill Bundles** — password-protected exports via WebCrypto (`AES-GCM` + `PBKDF2`, 310k iterations), entirely client-side. Encrypted `.pvault` containers unlock through the existing import flow. ✅ Done.
+- [x] **Creator fields in bundle spec** — optional `author`, `license`, and `version` per item, round-tripped through export/import and displayed on imported items. ✅ Done.
 
 ---
 
