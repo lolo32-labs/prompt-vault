@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "repos": [
+    {
+      "name": "Anthropic Skills",
+      "description": "Anthropic's official collection of agent skills — document handling, design, coding workflows, and more, each defined as a SKILL.md.",
+      "repo": "https://github.com/anthropics/skills",
+      "tags": ["official", "skills", "productivity"],
+      "addedAt": "2026-08-31"
+    },
+    {
+      "name": "Superpowers",
+      "description": "A curated, battle-tested library of skills for coding agents — debugging, planning, TDD, and collaboration workflows.",
+      "repo": "https://github.com/obra/superpowers",
+      "tags": ["skills", "coding", "workflows"],
+      "addedAt": "2026-08-31"
+    }
+  ]
+}

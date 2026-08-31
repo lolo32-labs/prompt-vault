@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "validate:moltbot": "node scripts/validate-moltbot.mjs"
+    "validate:moltbot": "node scripts/validate-moltbot.mjs",
+    "validate:registry": "node scripts/validate-registry.mjs"
   },
   "keywords": [
     "prompts",

@@ -6,6 +6,7 @@ import ImportSelector from "@/components/ImportSelector";
 import LibraryView from "@/components/LibraryView";
 import WatchList from "@/components/WatchList";
 import AgentBridge from "@/components/AgentBridge";
+import CommunityRegistry from "@/components/CommunityRegistry";
 import {
   ScannedItem,
   PromptItem,
@@ -35,7 +36,7 @@ import {
 import { generateId, parseTags, duplicateKey, formatFileDate, fmtBytes } from "@/lib/utils";
 import { useDebouncedValue, useFocusTrap, useStorageEstimate } from "@/lib/hooks";
 import { checkWatch, checkWatches } from "@/lib/watch";
-import { fetchRepoFiles } from "@/lib/scanner";
+import { fetchRepoFiles, scanGitHubRepo, parseRepoUrl } from "@/lib/scanner";
 import { startBridge } from "@/lib/bridge";
 import { shouldNudgeBackup } from "@/lib/backup";
 import {
@@ -109,6 +110,7 @@ export default function Home() {
   const [reviewItems, setReviewItems] = useState<Record<string, ScannedItem[]>>({});
   const [activeReviewRepo, setActiveReviewRepo] = useState<string | null>(null);
   const [bridgeSettings, setBridgeSettings] = useState<BridgeSettings>(DEFAULT_BRIDGE_SETTINGS);
+  const [registryScanning, setRegistryScanning] = useState<string | null>(null);
   const [backupMeta, setBackupMeta] = useState<BackupMeta>({});
   const storageUsage = useStorageEstimate();
   const searchRef = useRef<HTMLInputElement>(null);
@@ -208,6 +210,27 @@ export default function Home() {
   const handleScanCancel = () => {
     setScannedItems(null);
     setScannedRepo(null);
+  };
+
+  const handleRegistryScan = async (repoUrl: string) => {
+    if (registryScanning) return;
+    setRegistryScanning(repoUrl);
+    try {
+      const items = await scanGitHubRepo(repoUrl, {});
+      const ref = parseRepoUrl(repoUrl);
+      setScannedItems(items);
+      if (ref) setScannedRepo(ref);
+      if (items.length === 0) {
+        showNotice("No SKILL.md or .prompt files found in that repo.", { type: "warn" });
+      }
+    } catch (err) {
+      showNotice(
+        err instanceof Error ? err.message : "Failed to scan that repository.",
+        { type: "error" }
+      );
+    } finally {
+      setRegistryScanning(null);
+    }
   };
 
   const handleImport = async (
@@ -1116,6 +1139,13 @@ export default function Home() {
                       />
                     )}
                   </div>
+
+                  {!scannedItems && !activeReviewRepo && (
+                    <CommunityRegistry
+                      scanningUrl={registryScanning}
+                      onPick={handleRegistryScan}
+                    />
+                  )}
 
                   {/* Feature cards */}
                   <div className="glass rounded-2xl p-6 md:p-8 max-w-2xl mx-auto w-full gradient-border">

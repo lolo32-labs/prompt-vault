@@ -1,0 +1,35 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/lolo32-labs/prompt-vault/schemas/registry.schema.json",
+  "title": "Community Registry",
+  "description": "Curated list of GitHub repositories containing prompt/skill assets. Grows via pull requests.",
+  "type": "object",
+  "required": ["version", "repos"],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "const": 1 },
+    "repos": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "description", "repo"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+          "description": { "type": "string", "minLength": 1, "maxLength": 240 },
+          "repo": {
+            "type": "string",
+            "pattern": "^https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/?$",
+            "description": "Repository root URL. Sub-paths, /tree/, and .git are not allowed."
+          },
+          "tags": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1, "maxLength": 24 },
+            "maxItems": 5
+          },
+          "addedAt": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" }
+        }
+      }
+    }
+  }
+}

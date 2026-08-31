@@ -36,6 +36,31 @@ import { cn, copyToClipboard } from "@/lib/utils";
 import { useFocusTrap } from "@/lib/hooks";
 import MarkdownPreview from "./MarkdownPreview";
 import DiffView from "./DiffView";
+import { scorePrompt } from "@/lib/quality";
+
+const scoreColor = (v: number) =>
+  v >= 80 ? "text-accent-400" : v >= 50 ? "text-surface-400" : "text-rose-400";
+const scoreBarColor = (v: number) =>
+  v >= 80 ? "bg-accent-500" : v >= 50 ? "bg-surface-500" : "bg-rose-500";
+
+function ScoreBar({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] font-semibold text-surface-500 uppercase tracking-wider">
+          {label}
+        </span>
+        <span className={`text-xs font-bold font-mono ${scoreColor(value)}`}>{value}</span>
+      </div>
+      <div className="h-1.5 rounded-full bg-surface-800 overflow-hidden">
+        <div
+          className={`h-full rounded-full ${scoreBarColor(value)}`}
+          style={{ width: `${value}%` }}
+        />
+      </div>
+    </div>
+  );
+}
 
 interface LibraryViewProps {
   prompts: PromptItem[];
@@ -101,6 +126,11 @@ export default function LibraryView({
     variables.forEach((v) => (initialValues[v] = ""));
     setVariableValues(initialValues);
   }
+
+  const quality = useMemo(
+    () => (selectedPrompt ? scorePrompt(selectedPrompt) : null),
+    [selectedPrompt]
+  );
 
   const injectedContent = useMemo(() => {
     if (!selectedPrompt) return "";
@@ -420,6 +450,17 @@ export default function LibraryView({
                   #{t}
                 </button>
               ))}
+              {(() => {
+                const q = scorePrompt(prompt);
+                return (
+                  <span
+                    title={`Quality ${q.total}/100 — clarity ${q.clarity}, organization ${q.organization}, variables ${q.variables}`}
+                    className={`ml-auto px-1.5 py-0.5 rounded bg-surface-900/80 border border-surface-800/50 text-[9px] font-bold font-mono ${scoreColor(q.total)}`}
+                  >
+                    {q.total}
+                  </span>
+                );
+              })()}
             </div>
           </motion.div>
         ))}
@@ -886,6 +927,29 @@ export default function LibraryView({
                           )}
                         </div>
                       </div>
+
+                      {quality && (
+                        <div className="glass p-5 rounded-xl border border-surface-800/40">
+                          <div className="flex items-center justify-between mb-4">
+                            <h4 className="font-semibold text-surface-200 flex items-center gap-2 text-sm">
+                              Quality Score
+                            </h4>
+                            <span
+                              className={`px-2 py-0.5 rounded-md text-xs font-bold font-mono ${scoreColor(quality.total)}`}
+                            >
+                              {quality.total}/100
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                            <ScoreBar label="Clarity" value={quality.clarity} />
+                            <ScoreBar label="Organization" value={quality.organization} />
+                            <ScoreBar label="Variables" value={quality.variables} />
+                          </div>
+                          <p className="text-[10px] text-surface-600 mt-3 leading-relaxed">
+                            Deterministic local heuristics — no network, no LLM.
+                          </p>
+                        </div>
+                      )}
 
                       {selectedPrompt.type === "skill" && (
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
