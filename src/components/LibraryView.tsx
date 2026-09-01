@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useMemo, useCallback, useDeferredValue } from "react";
+import { createPortal } from "react-dom";
 import { PromptItem, PromptHistoryEntry } from "@/types";
 import {
   Copy,
@@ -510,6 +511,8 @@ export default function LibraryView({
       )}
 
       {/* ─── Detail Modal ───────────────────────── */}
+      {typeof document !== "undefined" &&
+        createPortal(
       <AnimatePresence>
         {selectedPrompt && (
           <motion.div
@@ -1040,7 +1043,9 @@ export default function LibraryView({
             </motion.div>
           </motion.div>
         )}
-      </AnimatePresence>
+      </AnimatePresence>,
+        document.body
+      )}
     </div>
   );
 }

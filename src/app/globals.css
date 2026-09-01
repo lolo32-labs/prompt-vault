@@ -118,7 +118,12 @@
   background: var(--color-surface-600);
 }
 
-/* ─── Glass Utilities ───────────────────── */
+/* ─── Glass / Gradient / Ambient / Dot Grid ─
+   Wrapped in @layer components so Tailwind utilities (which live in the
+   later `utilities` layer) can override them — e.g. overflow-y-auto must
+   beat .ambient-glow's overflow:hidden on the main scroll container.   */
+
+@layer components {
 
 .glass {
   background: rgba(14, 14, 18, 0.75);
@@ -186,7 +191,7 @@
 
 .ambient-glow::before {
   content: '';
-  position: absolute;
+  position: fixed;
   top: -50%;
   right: -30%;
   width: 600px;
@@ -198,7 +203,7 @@
 
 .ambient-glow::after {
   content: '';
-  position: absolute;
+  position: fixed;
   bottom: -40%;
   left: -20%;
   width: 500px;
@@ -214,6 +219,8 @@
   background-image:
     radial-gradient(circle, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
   background-size: 24px 24px;
+}
+
 }
 
 /* ─── Markdown Preview ─────────────────── */
